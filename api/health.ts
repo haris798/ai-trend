@@ -1,7 +1,26 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
-export default function handler(_req: VercelRequest, res: VercelResponse) {
+interface JsonResponse extends ServerResponse {
+  json?: (body: unknown) => void;
+  status?: (code: number) => JsonResponse;
+}
+
+type RequestLike = IncomingMessage;
+
+function sendJson(res: JsonResponse, status: number, body: unknown) {
+  res.statusCode = status;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(body));
+}
+
+export default function handler(_req: RequestLike, res: JsonResponse) {
   const hasSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
   const hasGemini = Boolean(process.env.GEMINI_API_KEY);
-  return res.status(200).json({ success: true, service: 'ai-trend', supabaseConfigured: hasSupabase, geminiConfigured: hasGemini, timestamp: new Date().toISOString() });
+  sendJson(res, 200, {
+    success: true,
+    service: 'ai-trend',
+    supabaseConfigured: hasSupabase,
+    geminiConfigured: hasGemini,
+    timestamp: new Date().toISOString(),
+  });
 }
