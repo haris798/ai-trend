@@ -1,0 +1,14 @@
+alter table public.saved_trends add column if not exists client_id text;
+alter table public.saved_trends add column if not exists trend_data jsonb;
+alter table public.saved_trends add column if not exists keyword text;
+alter table public.saved_trends add column if not exists region text;
+alter table public.saved_trends add column if not exists category text;
+alter table public.saved_trends add column if not exists traffic text;
+alter table public.saved_trends add column if not exists opportunity_score integer;
+alter table public.alerts add column if not exists client_id text;
+alter table public.alerts add column if not exists target_rank integer not null default 10;
+alter table public.saved_trends drop constraint if exists saved_trends_trend_id_key;
+create unique index if not exists idx_saved_trends_client_trend on public.saved_trends(client_id, trend_id);
+create index if not exists idx_saved_trends_client_id on public.saved_trends(client_id);
+create index if not exists idx_saved_trends_keyword on public.saved_trends(keyword);
+create index if not exists idx_alerts_client_id on public.alerts(client_id);
