@@ -1,4 +1,4 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createClient } from '@supabase/supabase-js';
 
 function getSupabase() {
@@ -8,22 +8,25 @@ function getSupabase() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-function json(res: VercelResponse, status: number, body: unknown) {
-  return res.status(status).json(body);
+function json(res: ServerResponse, status: number, body: unknown) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(body));
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: IncomingMessage & { query?: Record<string, string | string[] | undefined>; body?: any }, res: ServerResponse) {
   const supabase = getSupabase();
   if (!supabase) return json(res, 503, { success: false, error: 'Supabase server configuration is missing' });
 
-  const clientId = String(req.headers['x-client-id'] || '').trim();
+  const headerValue = req.headers['x-client-id'];
+  const clientId = String(Array.isArray(headerValue) ? headerValue[0] : headerValue || '').trim();
   if (!clientId || clientId.length > 128) return json(res, 400, { success: false, error: 'Valid client ID is required' });
 
   try {
     if (req.method === 'GET') {
       const { data, error } = await supabase.from('saved_trends').select('id,trend_id,trend_data,created_at').eq('client_id', clientId).order('created_at', { ascending: false });
       if (error) throw error;
-      return json(res, 200, { success: true, data: (data || []).map(row => row.trend_data).filter(Boolean) });
+      return json(res, 200, { success: true, data: (data || []).map((row) => row.trend_data).filter(Boolean) });
     }
 
     if (req.method === 'POST') {
@@ -35,7 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'DELETE') {
-      const trendId = String(req.query.id || req.body?.id || '').trim();
+      const queryId = req.query?.id;
+      const trendId = String(Array.isArray(queryId) ? queryId[0] : queryId || req.body?.id || '').trim();
       if (!trendId) return json(res, 400, { success: false, error: 'Trend ID is required' });
       const { error } = await supabase.from('saved_trends').delete().eq('client_id', clientId).eq('trend_id', trendId);
       if (error) throw error;
