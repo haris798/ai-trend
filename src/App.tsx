@@ -11,314 +11,160 @@ import { SettingsView } from './pages/SettingsView';
 import { TrendDetailModal } from './components/TrendDetailModal';
 import { ExportModal } from './components/ExportModal';
 import { TrendingSearch, AiUsageStats } from './types';
-import { supabase } from './lib/supabase';
 import { CheckCircle2 } from 'lucide-react';
+
+const CLIENT_ID_KEY = 'ai_trend_client_id';
+
+function getClientId(): string {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'anonymous-browser';
+  }
+}
 
 export default function App() {
   const [currentView, setCurrentView] = useState<PageView>('dashboard');
   const [selectedRegion, setSelectedRegion] = useState<string>('ID');
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('24h');
   const [selectedCategory, setSelectedCategory] = useState<string>(() => {
-    try {
-      return localStorage.getItem('ai_trend_category') || 'Technology';
-    } catch {
-      return 'Technology';
-    }
+    try { return localStorage.getItem('ai_trend_category') || 'Technology'; } catch { return 'Technology'; }
   });
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-
-  // Trending data state
   const [trends, setTrends] = useState<TrendingSearch[]>([]);
   const [loadingTrends, setLoadingTrends] = useState(false);
   const [trendError, setTrendError] = useState<string | null>(null);
-
-  // Saved trends state (local + Supabase sync)
   const [savedTrends, setSavedTrends] = useState<TrendingSearch[]>(() => {
-    try {
-      const saved = localStorage.getItem('ai_trend_saved');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+    try { const saved = localStorage.getItem('ai_trend_saved'); return saved ? JSON.parse(saved) : []; } catch { return []; }
   });
-
-  // Active trend for deep-dive modal
   const [selectedTrend, setSelectedTrend] = useState<TrendingSearch | null>(null);
-
-  // Export modal state
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [exportTrendsData, setExportTrendsData] = useState<TrendingSearch[]>([]);
+  const [aiUsage, setAiUsage] = useState<AiUsageStats | null>(null);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try { const saved = localStorage.getItem('ai_trend_theme'); if (saved) return saved === 'dark'; return true; } catch { return true; }
+  });
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
+  const apiHeaders = useCallback(() => ({ 'x-client-id': getClientId(), 'Content-Type': 'application/json' }), []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) { root.classList.add('dark'); localStorage.setItem('ai_trend_theme', 'dark'); }
+    else { root.classList.remove('dark'); localStorage.setItem('ai_trend_theme', 'light'); }
+  }, [darkMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ai_trend_saved', JSON.stringify(savedTrends)); } catch { /* ignore storage errors */ }
+  }, [savedTrends]);
+
+  useEffect(() => {
+    let active = true;
+    const loadSaved = async () => {
+      try {
+        const res = await fetch('/api/saved-trends', { headers: apiHeaders() });
+        const json = await res.json();
+        if (active && res.ok && Array.isArray(json.data)) setSavedTrends(json.data);
+      } catch { /* localStorage remains the offline fallback */ }
+    };
+    loadSaved();
+    return () => { active = false; };
+  }, [apiHeaders]);
+
+  const fetchTrends = useCallback(async (force = false) => {
+    setLoadingTrends(true);
+    setTrendError(null);
+    try {
+      const queryParams = new URLSearchParams({ region: selectedRegion, timeframe: selectedTimeframe, limit: '10', refresh: force ? 'true' : 'false' });
+      const res = await fetch(`/api/trending?${queryParams.toString()}`);
+      const data = await res.json();
+      if (!res.ok && !data.data?.length) throw new Error(data.error || 'Failed to fetch trending searches');
+      setTrends(data.data || []);
+      if (data.warning) setTrendError(`Note: ${data.warning}`);
+    } catch (err: any) {
+      setTrendError(err.message || 'Unable to retrieve live trends.');
+    } finally { setLoadingTrends(false); }
+  }, [selectedRegion, selectedTimeframe]);
+
+  const fetchAiUsage = useCallback(async () => {
+    try {
+      const res = await fetch('/api/ai-usage');
+      const json = await res.json();
+      if (json.success) setAiUsage(json.data);
+    } catch (e) { console.error('Failed to fetch AI usage stats:', e); }
+  }, []);
+
+  useEffect(() => { fetchTrends(false); fetchAiUsage(); }, [fetchTrends, fetchAiUsage]);
+
+  const handleToggleSave = useCallback(async (trend: TrendingSearch) => {
+    const isAlreadySaved = savedTrends.some((s) => s.id === trend.id);
+    if (isAlreadySaved) {
+      setSavedTrends(prev => prev.filter((s) => s.id !== trend.id));
+      try {
+        const res = await fetch(`/api/saved-trends?id=${encodeURIComponent(trend.id)}`, { method: 'DELETE', headers: apiHeaders() });
+        if (!res.ok) throw new Error('Delete failed');
+        showToast(`Removed "${trend.keyword}" from saved trends`);
+      } catch {
+        showToast(`Removed "${trend.keyword}" locally; server sync unavailable`);
+      }
+      return;
+    }
+
+    setSavedTrends(prev => [trend, ...prev.filter(s => s.id !== trend.id)]);
+    try {
+      const res = await fetch('/api/saved-trends', { method: 'POST', headers: apiHeaders(), body: JSON.stringify({ trend }) });
+      if (!res.ok) throw new Error('Save failed');
+      showToast(`Saved "${trend.keyword}" to bookmarks`);
+    } catch {
+      showToast(`Saved "${trend.keyword}" locally; server sync unavailable`);
+    }
+  }, [apiHeaders, savedTrends, showToast]);
+
+  const handleRemoveSaved = useCallback(async (id: string) => {
+    setSavedTrends(prev => prev.filter((s) => s.id !== id));
+    try {
+      const res = await fetch(`/api/saved-trends?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers: apiHeaders() });
+      if (!res.ok) throw new Error('Delete failed');
+      showToast('Trend removed from saved');
+    } catch { showToast('Trend removed locally; server sync unavailable'); }
+  }, [apiHeaders, showToast]);
 
   const handleOpenExport = useCallback((customList?: TrendingSearch[]) => {
     setExportTrendsData(customList && customList.length > 0 ? customList : trends);
     setIsExportOpen(true);
   }, [trends]);
 
-  // AI Usage today
-  const [aiUsage, setAiUsage] = useState<AiUsageStats | null>(null);
-
-  // Dark mode (default to true for authentic frosted glass experience)
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('ai_trend_theme');
-      if (saved) return saved === 'dark';
-      return true; // Default to dark for Frosted Glass theme
-    } catch {
-      return true;
-    }
-  });
-
-  // Toast feedback
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 3000);
-  }, []);
-
-  // Update theme class on HTML document
-  useEffect(() => {
-    const root = document.documentElement;
-    if (darkMode) {
-      root.classList.add('dark');
-      localStorage.setItem('ai_trend_theme', 'dark');
-    } else {
-      root.classList.remove('dark');
-      localStorage.setItem('ai_trend_theme', 'light');
-    }
-  }, [darkMode]);
-
-  // Persist saved trends to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('ai_trend_saved', JSON.stringify(savedTrends));
-    } catch (e) {
-      console.error('Failed to persist saved trends to localStorage:', e);
-    }
-  }, [savedTrends]);
-
-  // Fetch Trending Searches
-  const fetchTrends = useCallback(
-    async (force = false) => {
-      setLoadingTrends(true);
-      setTrendError(null);
-
-      try {
-        const queryParams = new URLSearchParams({
-          region: selectedRegion,
-          timeframe: selectedTimeframe,
-          limit: '10',
-          refresh: force ? 'true' : 'false',
-        });
-
-        const res = await fetch(`/api/trending?${queryParams.toString()}`);
-        const data = await res.json();
-
-        if (!res.ok && !data.data?.length) {
-          throw new Error(data.error || 'Failed to fetch trending searches');
-        }
-
-        setTrends(data.data || []);
-        if (data.warning) {
-          setTrendError(`Note: ${data.warning}`);
-        }
-      } catch (err: any) {
-        setTrendError(err.message || 'Unable to retrieve live trends.');
-      } finally {
-        setLoadingTrends(false);
-      }
-    },
-    [selectedRegion, selectedTimeframe]
-  );
-
-  // Fetch AI Usage Stats
-  const fetchAiUsage = useCallback(async () => {
-    try {
-      const res = await fetch('/api/ai-usage');
-      const json = await res.json();
-      if (json.success) {
-        setAiUsage(json.data);
-      }
-    } catch (e) {
-      console.error('Failed to fetch AI usage stats:', e);
-    }
-  }, []);
-
-  // Load trends on region or timeframe change
-  useEffect(() => {
-    fetchTrends(false);
-    fetchAiUsage();
-  }, [fetchTrends, fetchAiUsage]);
-
-  // Toggle Save / Bookmark
-  const handleToggleSave = (trend: TrendingSearch) => {
-    const isAlreadySaved = savedTrends.some((s) => s.id === trend.id);
-    if (isAlreadySaved) {
-      setSavedTrends(savedTrends.filter((s) => s.id !== trend.id));
-      showToast(`Removed "${trend.keyword}" from saved trends`);
-    } else {
-      setSavedTrends([trend, ...savedTrends]);
-      showToast(`Saved "${trend.keyword}" to bookmarks`);
-
-      // Sync with Supabase if online
-      if (supabase) {
-        Promise.resolve(
-          supabase
-            .from('saved_trends')
-            .insert({
-              keyword: trend.keyword,
-              region: trend.region,
-              category: trend.category,
-              traffic: trend.traffic,
-              opportunity_score: trend.opportunity_score,
-            })
-        )
-          .then(({ error }) => {
-            if (error && error.code !== 'PGRST205' && !error.message?.includes('schema cache')) {
-              console.debug('Supabase saved_trends sync note:', error.message);
-            }
-          })
-          .catch(() => {});
-      }
-    }
-  };
-
-  const handleRemoveSaved = (id: string) => {
-    setSavedTrends(savedTrends.filter((s) => s.id !== id));
-    showToast('Trend removed from saved');
-  };
-
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-[#020617] text-slate-900 dark:text-slate-100 font-sans transition-colors duration-200 relative overflow-x-hidden selection:bg-indigo-500/30 selection:text-indigo-200">
-      {/* Ambient Frosted Glass Glowing Orbs */}
       <div className="fixed top-[-10%] left-[-10%] w-[50vw] h-[50vw] max-w-[600px] max-h-[600px] bg-blue-600/15 dark:bg-blue-600/20 rounded-full blur-[120px] pointer-events-none z-0" />
       <div className="fixed bottom-[-10%] right-[-10%] w-[50vw] h-[50vw] max-w-[600px] max-h-[600px] bg-indigo-600/15 dark:bg-indigo-600/20 rounded-full blur-[120px] pointer-events-none z-0" />
       <div className="fixed top-[45%] left-[25%] w-[35vw] h-[35vw] max-w-[450px] max-h-[450px] bg-purple-600/10 dark:bg-purple-600/15 rounded-full blur-[140px] pointer-events-none z-0" />
-
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900/90 dark:bg-white/10 text-white dark:text-slate-100 text-xs font-semibold shadow-2xl border border-white/20 backdrop-blur-xl animate-in fade-in slide-in-from-bottom-3 duration-200">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
-
-      {/* Sidebar Navigation */}
-      <Sidebar
-        currentView={currentView}
-        onSelectView={setCurrentView}
-        savedCount={savedTrends.length}
-        darkMode={darkMode}
-        onToggleDarkMode={() => setDarkMode(!darkMode)}
-        isOpenMobile={mobileSidebarOpen}
-        onCloseMobile={() => setMobileSidebarOpen(false)}
-      />
-
-      {/* Main Layout Area */}
+      {toastMessage && <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900/90 dark:bg-white/10 text-white dark:text-slate-100 text-xs font-semibold shadow-2xl border border-white/20 backdrop-blur-xl animate-in fade-in slide-in-from-bottom-3 duration-200"><CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /><span>{toastMessage}</span></div>}
+      <Sidebar currentView={currentView} onSelectView={setCurrentView} savedCount={savedTrends.length} darkMode={darkMode} onToggleDarkMode={() => setDarkMode(!darkMode)} isOpenMobile={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} />
       <div className="lg:pl-64 flex flex-col min-h-screen">
-        {/* Sticky Header Navbar */}
-        <Navbar
-          onOpenMobile={() => setMobileSidebarOpen(true)}
-          selectedRegion={selectedRegion}
-          onSelectRegion={setSelectedRegion}
-          selectedTimeframe={selectedTimeframe}
-          onSelectTimeframe={setSelectedTimeframe}
-          selectedCategory={selectedCategory}
-          onSelectCategory={setSelectedCategory}
-          onRefresh={() => fetchTrends(true)}
-          loading={loadingTrends}
-          aiUsage={aiUsage}
-          trends={trends}
-          onShowToast={showToast}
-          onOpenExport={() => handleOpenExport(trends)}
-        />
-
-        {/* Dynamic Page Views */}
+        <Navbar onOpenMobile={() => setMobileSidebarOpen(true)} selectedRegion={selectedRegion} onSelectRegion={setSelectedRegion} selectedTimeframe={selectedTimeframe} onSelectTimeframe={setSelectedTimeframe} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} onRefresh={() => fetchTrends(true)} loading={loadingTrends} aiUsage={aiUsage} trends={trends} onShowToast={showToast} onOpenExport={() => handleOpenExport(trends)} />
         <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto">
-          {currentView === 'dashboard' && (
-            <DashboardView
-              trends={trends}
-              loading={loadingTrends}
-              error={trendError}
-              selectedRegion={selectedRegion}
-              selectedCategory={selectedCategory}
-              savedTrends={savedTrends}
-              onSelectTrend={setSelectedTrend}
-              onToggleSave={handleToggleSave}
-              onRefresh={() => fetchTrends(true)}
-              onSelectCategory={setSelectedCategory}
-            />
-          )}
-
-          {currentView === 'trending' && (
-            <TrendingView
-              trends={trends}
-              loading={loadingTrends}
-              selectedRegion={selectedRegion}
-              savedTrends={savedTrends}
-              onSelectTrend={setSelectedTrend}
-              onToggleSave={handleToggleSave}
-              onShowToast={showToast}
-              onOpenExport={handleOpenExport}
-            />
-          )}
-
-          {currentView === 'saved' && (
-            <SavedView
-              savedTrends={savedTrends}
-              onSelectTrend={setSelectedTrend}
-              onRemoveSaved={handleRemoveSaved}
-              onShowToast={showToast}
-              onOpenExport={handleOpenExport}
-            />
-          )}
-
-          {currentView === 'history' && (
-            <HistoryView
-              currentTrends={trends}
-              selectedRegion={selectedRegion}
-              onSelectTrend={setSelectedTrend}
-            />
-          )}
-
-          {currentView === 'compare' && (
-            <CompareView trends={trends} onSelectTrend={setSelectedTrend} />
-          )}
-
-          {currentView === 'alerts' && (
-            <AlertsView
-              currentTrends={trends}
-              onSelectTrend={setSelectedTrend}
-              onShowToast={showToast}
-            />
-          )}
-
+          {currentView === 'dashboard' && <DashboardView trends={trends} loading={loadingTrends} error={trendError} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onRefresh={() => fetchTrends(true)} onSelectCategory={setSelectedCategory} />}
+          {currentView === 'trending' && <TrendingView trends={trends} loading={loadingTrends} selectedRegion={selectedRegion} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onShowToast={showToast} onOpenExport={handleOpenExport} />}
+          {currentView === 'saved' && <SavedView savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onRemoveSaved={handleRemoveSaved} onShowToast={showToast} onOpenExport={handleOpenExport} />}
+          {currentView === 'history' && <HistoryView currentTrends={trends} selectedRegion={selectedRegion} onSelectTrend={setSelectedTrend} />}
+          {currentView === 'compare' && <CompareView trends={trends} onSelectTrend={setSelectedTrend} />}
+          {currentView === 'alerts' && <AlertsView currentTrends={trends} onSelectTrend={setSelectedTrend} onShowToast={showToast} />}
           {currentView === 'settings' && <SettingsView />}
         </main>
       </div>
-
-      {/* Deep-Dive Intelligence Modal */}
-      {selectedTrend && (
-        <TrendDetailModal
-          trend={selectedTrend}
-          onClose={() => setSelectedTrend(null)}
-          onSaveToggle={handleToggleSave}
-          isSaved={savedTrends.some((s) => s.id === selectedTrend.id)}
-          onRefreshUsage={fetchAiUsage}
-        />
-      )}
-
-      {/* Export Modal (CSV / JSON / Copy Keywords) */}
-      <ExportModal
-        isOpen={isExportOpen}
-        onClose={() => setIsExportOpen(false)}
-        trends={exportTrendsData.length > 0 ? exportTrendsData : trends}
-        region={selectedRegion}
-        category={selectedCategory}
-        onShowToast={showToast}
-      />
+      {selectedTrend && <TrendDetailModal trend={selectedTrend} onClose={() => setSelectedTrend(null)} onSaveToggle={handleToggleSave} isSaved={savedTrends.some((s) => s.id === selectedTrend.id)} onRefreshUsage={fetchAiUsage} />}
+      <ExportModal isOpen={isExportOpen} onClose={() => setIsExportOpen(false)} trends={exportTrendsData.length > 0 ? exportTrendsData : trends} region={selectedRegion} category={selectedCategory} onShowToast={showToast} />
     </div>
   );
 }
