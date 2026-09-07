@@ -8,6 +8,7 @@ import { HistoryView } from './pages/HistoryView';
 import { CompareView } from './pages/CompareView';
 import { AlertsView } from './pages/AlertsView';
 import { SettingsView } from './pages/SettingsView';
+import { SupabaseSettings } from './components/SupabaseSettings';
 import { TrendDetailModal } from './components/TrendDetailModal';
 import { ExportModal } from './components/ExportModal';
 import { TrendingSearch, AiUsageStats } from './types';
@@ -160,7 +161,7 @@ export default function App() {
           {currentView === 'history' && <HistoryView currentTrends={trends} selectedRegion={selectedRegion} onSelectTrend={setSelectedTrend} />}
           {currentView === 'compare' && <CompareView trends={trends} onSelectTrend={setSelectedTrend} />}
           {currentView === 'alerts' && <AlertsView currentTrends={trends} onSelectTrend={setSelectedTrend} onShowToast={showToast} />}
-          {currentView === 'settings' && <SettingsView />}
+          {currentView === 'settings' && <div className="space-y-6"><SupabaseSettings /><SettingsView /></div>}
         </main>
       </div>
       {selectedTrend && <TrendDetailModal trend={selectedTrend} onClose={() => setSelectedTrend(null)} onSaveToggle={handleToggleSave} isSaved={savedTrends.some((s) => s.id === selectedTrend.id)} onRefreshUsage={fetchAiUsage} />}
