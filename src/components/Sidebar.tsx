@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   Flame, LayoutDashboard, Bookmark, History, GitCompare,
-  Bell, Settings, Moon, Sun, Sparkles, Database, ShieldCheck
+  Bell, Settings, Moon, Sun, Sparkles, Database
 } from 'lucide-react';
 
 export type PageView = 'dashboard' | 'trending' | 'saved' | 'history' | 'compare' | 'alerts' | 'settings';
@@ -32,7 +32,7 @@ export const Sidebar: React.FC<Props> = ({
     { id: 'history' as PageView, label: 'Trend History', icon: History },
     { id: 'compare' as PageView, label: 'Compare Trends', icon: GitCompare },
     { id: 'alerts' as PageView, label: 'Keyword Alerts', icon: Bell },
-    { id: 'settings' as PageView, label: 'Architecture & Docs', icon: Settings },
+    { id: 'settings' as PageView, label: 'Settings', icon: Settings },
   ];
 
   const handleNavClick = (view: PageView) => {
@@ -42,7 +42,6 @@ export const Sidebar: React.FC<Props> = ({
 
   return (
     <>
-      {/* Mobile Backdrop */}
       {isOpenMobile && (
         <div
           className="fixed inset-0 z-40 bg-slate-950/60 lg:hidden backdrop-blur-xs"
@@ -50,7 +49,6 @@ export const Sidebar: React.FC<Props> = ({
         />
       )}
 
-      {/* Sidebar Container */}
       <aside
         id="app-sidebar"
         className={`fixed top-0 bottom-0 left-0 z-40 w-64 bg-white/75 dark:bg-white/[0.04] backdrop-blur-xl border-r border-slate-200/80 dark:border-white/10 flex flex-col justify-between transition-transform duration-300 ease-in-out lg:translate-x-0 ${
@@ -58,7 +56,6 @@ export const Sidebar: React.FC<Props> = ({
         }`}
       >
         <div>
-          {/* Logo & Brand */}
           <div className="p-5 border-b border-slate-200/80 dark:border-white/10">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold shadow-lg shadow-indigo-600/30 border border-indigo-400/30">
@@ -75,7 +72,6 @@ export const Sidebar: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Navigation Links */}
           <nav className="p-3 space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -113,7 +109,6 @@ export const Sidebar: React.FC<Props> = ({
           </nav>
         </div>
 
-        {/* Footer / Serverless Status & Dark Mode Toggle */}
         <div className="p-4 border-t border-slate-200/80 dark:border-white/10 space-y-3">
           <div className="p-3 rounded-xl bg-slate-50/70 dark:bg-white/5 border border-slate-200/60 dark:border-white/10 text-[11px] space-y-1.5 backdrop-blur-md">
             <div className="flex items-center justify-between">
@@ -131,6 +126,20 @@ export const Sidebar: React.FC<Props> = ({
               <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 font-semibold border border-indigo-500/20">Flash</span>
             </div>
           </div>
+
+          <button
+            type="button"
+            id="btn-supabase-settings"
+            onClick={() => handleNavClick('settings')}
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all border ${
+              currentView === 'settings'
+                ? 'bg-emerald-500/15 text-emerald-500 dark:text-emerald-300 border-emerald-500/30'
+                : 'bg-white/5 dark:bg-white/5 text-slate-600 dark:text-slate-300 border-white/10 hover:bg-emerald-500/10 hover:text-emerald-400'
+            }`}
+          >
+            <Database className="w-3.5 h-3.5" />
+            Supabase Settings
+          </button>
 
           <div className="flex items-center justify-between pt-1">
             <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Appearance</span>
