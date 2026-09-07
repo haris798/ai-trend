@@ -1,23 +1,25 @@
 import { GeminiTrendService } from '../src/services/gemini';
 import { CacheService } from '../src/services/cache';
+import { sendJson, parseBody, getCustomApiKey } from './_utils';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return sendJson(res, 405, { error: 'Method not allowed' });
   }
 
-  const { keyword, region, analysis } = req.body || {};
-  const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
+  const body = await parseBody(req);
+  const { keyword, region, analysis } = body || {};
+  const customApiKey = getCustomApiKey(req);
 
   if (!keyword) {
-    return res.status(400).json({ error: 'Keyword is required.' });
+    return sendJson(res, 400, { error: 'Keyword is required.' });
   }
 
   try {
-    const ideas = await GeminiTrendService.generateContentIdeas(keyword, region || 'ID', analysis, customApiKey);
+    const ideas = await GeminiTrendService.generateContentIdeas(keyword, region || 'ID', analysis, customApiKey || undefined);
     await CacheService.recordAiUsage('content_generation', keyword, 1200);
-    return res.status(200).json({ success: true, data: ideas });
+    return sendJson(res, 200, { success: true, data: ideas });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
+    return sendJson(res, 500, { success: false, error: error.message });
   }
 }

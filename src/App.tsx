@@ -64,8 +64,17 @@ export default function App() {
     try {
       const queryParams = new URLSearchParams({ region: selectedRegion, timeframe: selectedTimeframe, limit: '10', refresh: force ? 'true' : 'false' });
       const res = await fetch(`/api/trending?${queryParams.toString()}`);
-      const data = await res.json();
-      if (!res.ok && !data.data?.length) throw new Error(data.error || 'Failed to fetch trending searches');
+      let data: any = null;
+      try {
+        const text = await res.text();
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(res.ok ? 'Format respons server tidak valid.' : `Server error (${res.status}): Silakan coba beberapa saat lagi.`);
+      }
+
+      if (!res.ok && !data.data?.length) {
+        throw new Error(data.error || `Gagal memuat tren pencarian (${res.status})`);
+      }
       setTrends(data.data || []);
       if (data.warning) setTrendError(`Note: ${data.warning}`);
     } catch (err: any) {
@@ -78,8 +87,10 @@ export default function App() {
       const res = await fetch('/api/ai-usage', {
         headers: getApiHeaders(),
       });
-      const json = await res.json();
-      if (json.success) setAiUsage(json.data);
+      if (res.ok) {
+        const json = await res.json().catch(() => null);
+        if (json?.success) setAiUsage(json.data);
+      }
     } catch (e) { console.error('Failed to fetch AI usage stats:', e); }
   }, []);
 

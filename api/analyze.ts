@@ -1,18 +1,20 @@
 import { GeminiTrendService } from '../src/services/gemini';
 import { CacheService } from '../src/services/cache';
+import { sendJson, parseBody, getClientId, getCustomApiKey } from './_utils';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return sendJson(res, 405, { error: 'Method not allowed' });
   }
 
-  const { keyword, region, category, trendData, forceRefresh } = req.body || {};
-  const clientId = String(req.headers['x-client-id'] || req.body?.clientId || 'default-client').trim();
-  const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
+  const body = await parseBody(req);
+  const { keyword, region, category, trendData, forceRefresh } = body || {};
+  const clientId = getClientId(req, body);
+  const customApiKey = getCustomApiKey(req);
   const hasByok = Boolean(customApiKey && customApiKey.length > 10);
 
   if (!keyword) {
-    return res.status(400).json({ error: 'Keyword is required for analysis.' });
+    return sendJson(res, 400, { error: 'Keyword is required for analysis.' });
   }
 
   const reg = (region || 'ID').toUpperCase();
@@ -26,17 +28,17 @@ export default async function handler(req: any, res: any) {
         const ageMs = Math.max(0, Date.now() - createdAt);
         const ttlRemainingMs = Math.max(0, 24 * 60 * 60 * 1000 - ageMs);
 
-        res.setHeader?.('X-Cache', 'HIT');
-        res.setHeader?.('X-Cache-Source', 'supabase_24h');
-        res.setHeader?.('X-Cache-TTL-Remaining', `${Math.round(ttlRemainingMs / 1000)}s`);
-
-        return res.status(200).json({
+        return sendJson(res, 200, {
           success: true,
           cached: true,
           source: 'supabase_cache',
           ttlRemainingMs,
           cachedAt: cached.created_at || new Date().toISOString(),
           data: cached,
+        }, {
+          'X-Cache': 'HIT',
+          'X-Cache-Source': 'supabase_24h',
+          'X-Cache-TTL-Remaining': `${Math.round(ttlRemainingMs / 1000)}s`
         });
       }
     }
@@ -44,46 +46,49 @@ export default async function handler(req: any, res: any) {
     // 2. Check Quota before executing live AI generation
     const quota = await CacheService.checkClientQuota(clientId, hasByok);
     if (quota.isQuotaExceeded) {
-      return res.status(429).json({
+      return sendJson(res, 429, {
         success: false,
-        error: 'Batas kuota harian Free Tier tercapai (5/5 analisis hari ini). Masukkan Gemini API Key pribadi Anda di menu Settings (BYOK) untuk akses tanpa batas, atau tunggu reset kuota besok.',
         quotaExceeded: true,
-        tier: 'free',
+        tier: quota.tier,
         dailyLimit: quota.dailyLimit,
         usedToday: quota.usedToday,
-        remaining: quota.remaining,
+        remainingToday: quota.remaining,
+        error: `Batas kuota harian analisis AI gratis telah tercapai (${quota.usedToday}/${quota.dailyLimit} analisis hari ini). Silakan gunakan Gemini API Key Anda sendiri (BYOK) di Pengaturan atau tunggu besok.`,
       });
     }
 
-    // 3. Cache miss or forced refresh: Execute Gemini Analysis
+    // 3. Generate live trend intelligence
     const analysis = await GeminiTrendService.analyzeTrend(
       keyword,
       reg,
-      category || 'General',
-      trendData || {},
-      customApiKey
+      category,
+      trendData,
+      customApiKey || undefined
     );
 
-    // 4. Save to Supabase 24h Cache & Track Usage
+    // 4. Save to Supabase and memory cache
     await CacheService.setAnalysis(analysis);
-    await CacheService.recordClientAnalysis(clientId, keyword, 900);
+    if (!hasByok) {
+      await CacheService.recordClientAnalysis(clientId, keyword, 1500);
+    } else {
+      await CacheService.recordAiUsage('analysis', keyword, 1500);
+    }
 
-    res.setHeader?.('X-Cache', 'MISS');
-    res.setHeader?.('X-Cache-Source', hasByok ? 'gemini_byok' : 'gemini_3.8_flash');
-
-    return res.status(200).json({
+    return sendJson(res, 200, {
       success: true,
       cached: false,
-      source: hasByok ? 'gemini_byok' : 'gemini_3.8_flash',
+      source: hasByok ? 'gemini_byok' : 'gemini_live',
       ttlRemainingMs: 24 * 60 * 60 * 1000,
-      cachedAt: analysis.created_at || new Date().toISOString(),
+      cachedAt: new Date().toISOString(),
       data: analysis,
-      tier: quota.tier,
+    }, {
+      'X-Cache': 'MISS'
     });
   } catch (error: any) {
-    return res.status(500).json({
+    console.error('Error generating trend analysis:', error);
+    return sendJson(res, 500, {
       success: false,
-      error: error.message || 'Failed to complete Gemini AI trend analysis.',
+      error: error.message || 'Failed to analyze trend with Gemini AI',
     });
   }
 }
