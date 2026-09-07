@@ -1,0 +1,6 @@
+{
+  "name": "AI TREND RESEARCH",
+  "description": "Platform riset Google Trending Searches dengan analisis peluang konten, monetisasi, dan keyword bertenaga Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
