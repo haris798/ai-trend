@@ -9,15 +9,21 @@ type RuntimeConfig = {
 };
 
 function getRuntimeConfig(): RuntimeConfig {
+  if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(RUNTIME_CONFIG_KEY);
-    return raw ? JSON.parse(raw) : {};
+    const raw = window.localStorage.getItem(RUNTIME_CONFIG_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return {
+      supabaseUrl: typeof parsed?.supabaseUrl === 'string' ? parsed.supabaseUrl.trim() : undefined,
+      supabaseAnonKey: typeof parsed?.supabaseAnonKey === 'string' ? parsed.supabaseAnonKey.trim() : undefined,
+    };
   } catch {
     return {};
   }
 }
 
-const runtimeConfig = typeof window !== 'undefined' ? getRuntimeConfig() : {};
+const runtimeConfig = getRuntimeConfig();
 const supabaseUrl = runtimeConfig.supabaseUrl || import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
 const supabaseAnonKey = runtimeConfig.supabaseAnonKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
@@ -43,8 +49,9 @@ export function getSupabaseStatus(): {
   configured: boolean;
   url: string;
   hasAnonKey: boolean;
+  source: 'browser' | 'environment';
 } {
-  const current = typeof window !== 'undefined' ? getRuntimeConfig() : {};
+  const current = getRuntimeConfig();
   const currentUrl = current.supabaseUrl || import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
   const currentAnonKey = current.supabaseAnonKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
@@ -52,5 +59,6 @@ export function getSupabaseStatus(): {
     configured: Boolean(currentUrl && currentAnonKey && currentUrl.includes('.supabase.co')),
     url: currentUrl,
     hasAnonKey: Boolean(currentAnonKey),
+    source: current.supabaseUrl || current.supabaseAnonKey ? 'browser' : 'environment',
   };
 }
