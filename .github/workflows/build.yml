@@ -66,4 +66,4 @@ jobs:
 
       - name: Check serverless API TypeScript
         run: |
-          bunx tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck api/*.ts
+          bunx tsc --noEmit --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck api/*.ts
