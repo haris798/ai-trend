@@ -1,13 +1,30 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const DEFAULT_SUPABASE_URL = 'https://tvirwhgvujcdutijggss.supabase.co';
+const RUNTIME_CONFIG_KEY = 'ai_trend_runtime_config';
+
+type RuntimeConfig = {
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+};
+
+function getRuntimeConfig(): RuntimeConfig {
+  try {
+    const raw = localStorage.getItem(RUNTIME_CONFIG_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+const runtimeConfig = typeof window !== 'undefined' ? getRuntimeConfig() : {};
+const supabaseUrl = runtimeConfig.supabaseUrl || import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+const supabaseAnonKey = runtimeConfig.supabaseAnonKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = Boolean(
-  supabaseUrl && 
-  supabaseAnonKey && 
-  supabaseUrl !== 'https://your-project.supabase.co' &&
-  supabaseAnonKey !== 'your-supabase-anon-key'
+  supabaseUrl &&
+  supabaseAnonKey &&
+  supabaseUrl.includes('.supabase.co')
 );
 
 let client: SupabaseClient | null = null;
@@ -27,9 +44,13 @@ export function getSupabaseStatus(): {
   url: string;
   hasAnonKey: boolean;
 } {
+  const current = typeof window !== 'undefined' ? getRuntimeConfig() : {};
+  const currentUrl = current.supabaseUrl || import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+  const currentAnonKey = current.supabaseAnonKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
   return {
-    configured: isSupabaseConfigured,
-    url: supabaseUrl,
-    hasAnonKey: Boolean(supabaseAnonKey),
+    configured: Boolean(currentUrl && currentAnonKey && currentUrl.includes('.supabase.co')),
+    url: currentUrl,
+    hasAnonKey: Boolean(currentAnonKey),
   };
 }
