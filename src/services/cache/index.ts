@@ -1,32 +1,21 @@
 import { TrendingSearch, TrendAnalysis, AiUsageStats } from '../../types';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const TRENDS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const ANALYSIS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TRENDS_TTL_MS = 5 * 60 * 1000;
+const ANALYSIS_TTL_MS = 24 * 60 * 60 * 1000;
 
-// Fallback in-memory cache
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-}
+interface CacheEntry<T> { data: T; timestamp: number; }
 
 const memoryCache = {
   trending: new Map<string, CacheEntry<TrendingSearch[]>>(),
   analysis: new Map<string, CacheEntry<TrendAnalysis>>(),
-  aiUsageToday: {
-    analyses: 0,
-    contentGenerations: 0,
-    tokens: 0,
-    date: new Date().toISOString().slice(0, 10),
-  }
+  aiUsageToday: { analyses: 0, contentGenerations: 0, tokens: 0, date: new Date().toISOString().slice(0, 10) },
 };
 
 let cachedSupabaseClient: SupabaseClient | null = null;
 let cachedSupabaseConfigKey = '';
-
-// Track tables that are missing in Supabase schema cache to avoid repetitive failing requests and error logs
 const missingTables = new Map<string, number>();
-const TABLE_RECHECK_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const TABLE_RECHECK_COOLDOWN_MS = 5 * 60 * 1000;
 
 export function isTableMissing(tableName: string): boolean {
   const lastChecked = missingTables.get(tableName);
@@ -39,9 +28,6 @@ export function isTableMissing(tableName: string): boolean {
 }
 
 export function recordTableMissing(tableName: string): void {
-  if (!missingTables.has(tableName)) {
-    console.info(`[CacheService] Table '${tableName}' is not present in Supabase schema cache yet. Seamlessly falling back to In-Memory tier.`);
-  }
   missingTables.set(tableName, Date.now());
 }
 
@@ -49,34 +35,25 @@ export function isTableMissingError(error: any): boolean {
   if (!error) return false;
   const msg = typeof error === 'string' ? error : error.message || '';
   const code = error.code || '';
-  return (
-    code === 'PGRST205' ||
-    msg.includes("Could not find the table") ||
-    msg.includes("in the schema cache") ||
-    (msg.includes("relation") && msg.includes("does not exist"))
-  );
+  return code === 'PGRST205' || msg.includes('Could not find the table') || msg.includes('in the schema cache') || (msg.includes('relation') && msg.includes('does not exist'));
 }
 
 function getServerSupabaseClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (url && key && url !== 'https://your-project.supabase.co' && key !== 'your-supabase-anon-key' && key !== 'your_anon_key_here') {
-    const configKey = `${url}:${key.slice(0, 10)}`;
-    if (cachedSupabaseClient && cachedSupabaseConfigKey === configKey) {
-      return cachedSupabaseClient;
-    }
-    try {
-      cachedSupabaseClient = createClient(url, key, {
-        auth: { persistSession: false },
-      });
-      cachedSupabaseConfigKey = configKey;
-      return cachedSupabaseClient;
-    } catch {
-      return null;
-    }
+  if (!url || !key || url === 'https://your-project.supabase.co' || key === 'your-service-role-key') return null;
+
+  const configKey = `${url}:${key.slice(0, 12)}`;
+  if (cachedSupabaseClient && cachedSupabaseConfigKey === configKey) return cachedSupabaseClient;
+
+  try {
+    cachedSupabaseClient = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+    cachedSupabaseConfigKey = configKey;
+    return cachedSupabaseClient;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 export class CacheService {
@@ -88,412 +65,242 @@ export class CacheService {
     return `analysis:${keyword.trim().toLowerCase()}:${(region || 'ID').toUpperCase()}`;
   }
 
-  // --- TRENDING CACHE ---
   static async getTrending(region: string, timeframe: string): Promise<TrendingSearch[] | null> {
-    const key = this.getTrendingKey(region, timeframe);
+    const normalizedRegion = (region || 'ID').toUpperCase();
+    const normalizedTimeframe = timeframe || '24h';
+    const key = this.getTrendingKey(normalizedRegion, normalizedTimeframe);
 
-    // 1. Check in-memory fast tier
     const mem = memoryCache.trending.get(key);
-    if (mem && (Date.now() - mem.timestamp < TRENDS_TTL_MS)) {
-      return mem.data;
-    }
+    if (mem && Date.now() - mem.timestamp < TRENDS_TTL_MS) return mem.data;
 
-    // 2. Check Supabase cache if available and table exists
     const supabase = getServerSupabaseClient();
-    if (supabase && !isTableMissing('trends')) {
-      try {
-        const fiveMinutesAgo = new Date(Date.now() - TRENDS_TTL_MS).toISOString();
-        const { data, error } = await supabase
-          .from('trends')
-          .select('*')
-          .eq('region', region.toUpperCase())
-          .gte('timestamp', fiveMinutesAgo)
-          .order('rank', { ascending: true })
-          .limit(10);
+    if (!supabase || isTableMissing('trends')) return null;
 
-        if (error) {
-          if (isTableMissingError(error)) {
-            recordTableMissing('trends');
-          }
-        } else if (data && data.length > 0) {
-          const formatted: TrendingSearch[] = data.map((d: any) => ({
-            id: d.id,
-            keyword: d.keyword,
-            rank: d.rank,
-            region: d.region,
-            category: d.category || 'General',
-            traffic: d.traffic || '10K+',
-            trend_direction: d.trend_direction || 'up',
-            trend_percentage: d.trend_percentage,
-            source: d.source || 'Google Trends',
-            source_url: d.source_url,
-            timestamp: d.timestamp,
-            created_at: d.created_at,
-          }));
+    try {
+      const cutoff = new Date(Date.now() - TRENDS_TTL_MS).toISOString();
+      const { data, error } = await supabase
+        .from('trends')
+        .select('*')
+        .eq('region', normalizedRegion)
+        .eq('timeframe', normalizedTimeframe)
+        .gte('created_at', cutoff)
+        .order('rank', { ascending: true })
+        .limit(10);
 
-          // Populate memory cache
-          memoryCache.trending.set(key, { data: formatted, timestamp: Date.now() });
-          return formatted;
-        }
-      } catch (err: any) {
-        if (isTableMissingError(err)) {
-          recordTableMissing('trends');
-        } else {
-          console.warn('Supabase getTrending cache read failed:', err?.message || err);
-        }
+      if (error) {
+        if (isTableMissingError(error)) recordTableMissing('trends');
+        else console.warn('[CacheService] getTrending:', error.message);
+        return null;
       }
-    }
+      if (!data?.length) return null;
 
-    return null;
+      const formatted: TrendingSearch[] = data.map((d: any) => ({
+        id: d.id,
+        keyword: d.keyword,
+        rank: d.rank,
+        region: d.region,
+        category: d.category || 'General',
+        traffic: d.traffic || '',
+        trend_direction: d.trend_direction || 'up',
+        trend_percentage: d.trend_percentage || undefined,
+        source: d.source || 'Google Trends',
+        source_url: d.source_url,
+        timestamp: d.timestamp,
+        created_at: d.created_at,
+      }));
+      memoryCache.trending.set(key, { data: formatted, timestamp: Date.now() });
+      return formatted;
+    } catch (error: any) {
+      if (isTableMissingError(error)) recordTableMissing('trends');
+      return null;
+    }
   }
 
   static async setTrending(region: string, timeframe: string, data: TrendingSearch[]): Promise<void> {
-    const key = this.getTrendingKey(region, timeframe);
-
-    // Always update in-memory
+    const normalizedRegion = (region || 'ID').toUpperCase();
+    const normalizedTimeframe = timeframe || '24h';
+    const key = this.getTrendingKey(normalizedRegion, normalizedTimeframe);
     memoryCache.trending.set(key, { data, timestamp: Date.now() });
 
-    // Store in Supabase if configured
     const supabase = getServerSupabaseClient();
-    if (supabase && data.length > 0) {
-      try {
-        if (!isTableMissing('trends')) {
-          const rows = data.map(item => ({
-            id: item.id,
-            keyword: item.keyword,
-            rank: item.rank,
-            region: item.region,
-            category: item.category,
-            traffic: item.traffic,
-            trend_direction: item.trend_direction,
-            trend_percentage: item.trend_percentage,
-            source: item.source,
-            source_url: item.source_url,
-            timestamp: item.timestamp,
-            created_at: item.created_at || new Date().toISOString(),
-          }));
+    if (!supabase || !data.length || isTableMissing('trends')) return;
 
-          const { error: upsertErr } = await supabase.from('trends').upsert(rows, { onConflict: 'id' });
-          if (upsertErr && isTableMissingError(upsertErr)) {
-            recordTableMissing('trends');
-          }
-        }
+    try {
+      const rows = data.map(item => ({
+        id: item.id,
+        keyword: item.keyword,
+        rank: item.rank,
+        region: item.region,
+        timeframe: normalizedTimeframe,
+        category: item.category,
+        traffic: item.traffic || null,
+        trend_direction: item.trend_direction,
+        trend_percentage: item.trend_percentage || null,
+        source: item.source,
+        source_url: item.source_url,
+        timestamp: item.timestamp,
+        created_at: item.created_at || new Date().toISOString(),
+      }));
+      const { error } = await supabase.from('trends').upsert(rows, { onConflict: 'id' });
+      if (error && isTableMissingError(error)) recordTableMissing('trends');
 
-        // Record snapshot in trend_history
-        if (!isTableMissing('trend_history')) {
-          const historyRows = data.map(item => ({
-            keyword: item.keyword,
-            region: item.region,
-            rank: item.rank,
-            timestamp: new Date().toISOString(),
-          }));
-          const { error: histErr } = await supabase.from('trend_history').insert(historyRows);
-          if (histErr && isTableMissingError(histErr)) {
-            recordTableMissing('trend_history');
-          }
-        }
-      } catch (err: any) {
-        if (!isTableMissingError(err)) {
-          console.warn('Supabase setTrending cache write failed:', err?.message || err);
-        }
+      if (!isTableMissing('trend_history')) {
+        const historyRows = data.map(item => ({
+          keyword: item.keyword,
+          region: item.region,
+          timeframe: normalizedTimeframe,
+          rank: item.rank,
+          timestamp: new Date().toISOString(),
+        }));
+        const { error: historyError } = await supabase.from('trend_history').insert(historyRows);
+        if (historyError && isTableMissingError(historyError)) recordTableMissing('trend_history');
       }
+    } catch (error: any) {
+      if (!isTableMissingError(error)) console.warn('[CacheService] setTrending:', error.message || error);
     }
   }
 
-  // --- GEMINI ANALYSIS CACHE (24h TTL) ---
   static async getAnalysis(keyword: string, region: string): Promise<TrendAnalysis | null> {
-    const sanitizedKeyword = (keyword || '').trim();
-    const sanitizedRegion = (region || 'ID').toUpperCase();
-    const key = this.getAnalysisKey(sanitizedKeyword, sanitizedRegion);
-
-    // 1. Check in-memory fast tier (24h TTL)
+    const normalizedKeyword = (keyword || '').trim();
+    const normalizedRegion = (region || 'ID').toUpperCase();
+    const key = this.getAnalysisKey(normalizedKeyword, normalizedRegion);
     const mem = memoryCache.analysis.get(key);
-    if (mem && (Date.now() - mem.timestamp < ANALYSIS_TTL_MS)) {
-      console.log(`[CacheService] Analysis cache HIT (In-Memory 24h) for "${sanitizedKeyword}" (${sanitizedRegion})`);
-      return mem.data;
-    }
+    if (mem && Date.now() - mem.timestamp < ANALYSIS_TTL_MS) return mem.data;
 
-    // 2. Check Supabase (24h TTL) if table exists
     const supabase = getServerSupabaseClient();
-    if (supabase && !isTableMissing('trend_analysis')) {
-      try {
-        const twentyFourHoursAgo = new Date(Date.now() - ANALYSIS_TTL_MS).toISOString();
-        const { data, error } = await supabase
-          .from('trend_analysis')
-          .select('*')
-          .ilike('keyword', sanitizedKeyword)
-          .eq('region', sanitizedRegion)
-          .gte('created_at', twentyFourHoursAgo)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+    if (!supabase || isTableMissing('trend_analysis')) return null;
 
-        if (error) {
-          if (isTableMissingError(error)) {
-            recordTableMissing('trend_analysis');
-          } else {
-            console.warn('[CacheService] Supabase getAnalysis error:', error.message);
-          }
-        } else if (data) {
-          const analysis: TrendAnalysis = {
-            id: data.id,
-            trend_id: data.trend_id,
-            keyword: data.keyword,
-            region: data.region,
-            search_intent: data.search_intent,
-            trend_type: data.trend_type,
-            audience: data.audience,
-            why_trending: data.why_trending,
-            longevity: data.longevity,
-            competition: data.competition,
-            commercial_intent: data.commercial_intent,
-            content_potential: data.content_potential,
-            monetization_potential: data.monetization_potential,
-            trend_momentum: data.trend_momentum || 70,
-            opportunity_score: data.opportunity_score,
-            is_ai_estimate: data.is_ai_estimate ?? false,
-            created_at: data.created_at,
-          };
-
-          // Cache in memory using the original creation time to preserve true TTL
-          const createdTime = new Date(data.created_at).getTime();
-          memoryCache.analysis.set(key, {
-            data: analysis,
-            timestamp: isNaN(createdTime) ? Date.now() : createdTime,
-          });
-
-          console.log(`[CacheService] Analysis cache HIT (Supabase 24h) for "${sanitizedKeyword}" (${sanitizedRegion}) - Cached at ${data.created_at}`);
-          return analysis;
-        } else {
-          console.log(`[CacheService] Analysis cache MISS for "${sanitizedKeyword}" (${sanitizedRegion})`);
-        }
-      } catch (err: any) {
-        if (isTableMissingError(err)) {
-          recordTableMissing('trend_analysis');
-        } else {
-          console.warn('[CacheService] Supabase getAnalysis exception:', err?.message || err);
-        }
+    try {
+      const cutoff = new Date(Date.now() - ANALYSIS_TTL_MS).toISOString();
+      const { data, error } = await supabase.from('trend_analysis')
+        .select('*').ilike('keyword', normalizedKeyword).eq('region', normalizedRegion)
+        .gte('created_at', cutoff).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (error) {
+        if (isTableMissingError(error)) recordTableMissing('trend_analysis');
+        return null;
       }
+      if (!data) return null;
+      const analysis: TrendAnalysis = {
+        id: data.id, trend_id: data.trend_id, keyword: data.keyword, region: data.region,
+        search_intent: data.search_intent, trend_type: data.trend_type, audience: data.audience,
+        why_trending: data.why_trending, longevity: data.longevity, competition: data.competition,
+        commercial_intent: data.commercial_intent, content_potential: data.content_potential,
+        monetization_potential: data.monetization_potential, trend_momentum: data.trend_momentum,
+        opportunity_score: data.opportunity_score, is_ai_estimate: data.is_ai_estimate ?? true,
+        created_at: data.created_at,
+      };
+      const createdTime = new Date(data.created_at).getTime();
+      memoryCache.analysis.set(key, { data: analysis, timestamp: Number.isFinite(createdTime) ? createdTime : Date.now() });
+      return analysis;
+    } catch (error: any) {
+      if (!isTableMissingError(error)) console.warn('[CacheService] getAnalysis:', error.message || error);
+      return null;
     }
-
-    return null;
   }
 
   static async setAnalysis(analysis: TrendAnalysis): Promise<void> {
-    const sanitizedKeyword = (analysis.keyword || '').trim();
-    const sanitizedRegion = (analysis.region || 'ID').toUpperCase();
-    const key = this.getAnalysisKey(sanitizedKeyword, sanitizedRegion);
-    const now = Date.now();
-
-    // Store in-memory
-    memoryCache.analysis.set(key, { data: analysis, timestamp: now });
-
-    // Store in Supabase if configured and table exists
-    const supabase = getServerSupabaseClient();
-    if (supabase && !isTableMissing('trend_analysis')) {
-      try {
-        let validTrendId: string | null = null;
-        if (analysis.trend_id && !isTableMissing('trends')) {
-          // Verify trend_id exists in trends table to avoid foreign key violation
-          const { data: trendRow, error: trendErr } = await supabase
-            .from('trends')
-            .select('id')
-            .eq('id', analysis.trend_id)
-            .maybeSingle();
-          if (trendErr && isTableMissingError(trendErr)) {
-            recordTableMissing('trends');
-          } else if (trendRow) {
-            validTrendId = trendRow.id;
-          }
-        }
-
-        const createdAt = analysis.created_at || new Date().toISOString();
-
-        const { error } = await supabase.from('trend_analysis').insert({
-          trend_id: validTrendId,
-          keyword: sanitizedKeyword,
-          region: sanitizedRegion,
-          search_intent: analysis.search_intent,
-          trend_type: analysis.trend_type,
-          audience: analysis.audience,
-          why_trending: analysis.why_trending,
-          longevity: analysis.longevity,
-          competition: analysis.competition,
-          commercial_intent: analysis.commercial_intent,
-          content_potential: analysis.content_potential,
-          monetization_potential: analysis.monetization_potential,
-          trend_momentum: analysis.trend_momentum,
-          opportunity_score: analysis.opportunity_score,
-          is_ai_estimate: analysis.is_ai_estimate,
-          created_at: createdAt,
-        });
-
-        if (error) {
-          if (isTableMissingError(error)) {
-            recordTableMissing('trend_analysis');
-          } else {
-            console.warn('[CacheService] Supabase setAnalysis save error:', error.message);
-          }
-        } else {
-          console.log(`[CacheService] Analysis successfully saved to Supabase (24h TTL) for "${sanitizedKeyword}" (${sanitizedRegion})`);
-        }
-      } catch (err: any) {
-        if (isTableMissingError(err)) {
-          recordTableMissing('trend_analysis');
-        } else {
-          console.warn('[CacheService] Supabase setAnalysis exception:', err?.message || err);
-        }
-      }
-    }
-  }
-
-  // Batch helper: attach cached opportunity scores to trends
-  static async attachCachedAnalysisScores(trends: TrendingSearch[]): Promise<TrendingSearch[]> {
-    if (!trends || trends.length === 0) return trends;
+    const keyword = (analysis.keyword || '').trim();
+    const region = (analysis.region || 'ID').toUpperCase();
+    const key = this.getAnalysisKey(keyword, region);
+    memoryCache.analysis.set(key, { data: analysis, timestamp: Date.now() });
 
     const supabase = getServerSupabaseClient();
-    const twentyFourHoursAgo = new Date(Date.now() - ANALYSIS_TTL_MS).toISOString();
+    if (!supabase || isTableMissing('trend_analysis')) return;
 
     try {
-      // First check memory cache
-      let updatedTrends = trends.map((t) => {
-        const key = this.getAnalysisKey(t.keyword, t.region);
-        const mem = memoryCache.analysis.get(key);
-        if (mem && (Date.now() - mem.timestamp < ANALYSIS_TTL_MS)) {
-          return {
-            ...t,
-            opportunity_score: mem.data.opportunity_score,
-            is_ai_estimate: false,
-          };
-        }
-        return t;
-      });
-
-      // Second check Supabase for any that don't have memory cache
-      if (supabase && !isTableMissing('trend_analysis')) {
-        const keywords = updatedTrends.map((t) => t.keyword.trim());
-        const { data: dbAnalyses, error } = await supabase
-          .from('trend_analysis')
-          .select('keyword, region, opportunity_score, created_at')
-          .in('keyword', keywords)
-          .gte('created_at', twentyFourHoursAgo);
-
-        if (error) {
-          if (isTableMissingError(error)) {
-            recordTableMissing('trend_analysis');
-          }
-        } else if (dbAnalyses && dbAnalyses.length > 0) {
-          const scoreMap = new Map<string, number>();
-          for (const item of dbAnalyses) {
-            scoreMap.set(`${item.keyword.toLowerCase()}:${(item.region || 'ID').toUpperCase()}`, item.opportunity_score);
-          }
-
-          updatedTrends = updatedTrends.map((t) => {
-            const cachedScore = scoreMap.get(`${t.keyword.toLowerCase()}:${(t.region || 'ID').toUpperCase()}`);
-            if (cachedScore !== undefined) {
-              return {
-                ...t,
-                opportunity_score: cachedScore,
-                is_ai_estimate: false,
-              };
-            }
-            return t;
-          });
-        }
-      }
-
-      return updatedTrends;
-    } catch (err) {
-      if (!isTableMissingError(err)) {
-        console.warn('[CacheService] attachCachedAnalysisScores warning:', err);
-      }
-      return trends;
+      const row = {
+        trend_id: analysis.trend_id || null,
+        keyword, region,
+        search_intent: analysis.search_intent,
+        trend_type: analysis.trend_type,
+        audience: analysis.audience,
+        why_trending: analysis.why_trending,
+        longevity: analysis.longevity,
+        competition: analysis.competition,
+        commercial_intent: analysis.commercial_intent,
+        content_potential: analysis.content_potential,
+        monetization_potential: analysis.monetization_potential,
+        trend_momentum: analysis.trend_momentum,
+        opportunity_score: analysis.opportunity_score,
+        is_ai_estimate: true,
+        created_at: analysis.created_at || new Date().toISOString(),
+      };
+      const { error } = await supabase.from('trend_analysis').insert(row);
+      if (error && isTableMissingError(error)) recordTableMissing('trend_analysis');
+    } catch (error: any) {
+      if (!isTableMissingError(error)) console.warn('[CacheService] setAnalysis:', error.message || error);
     }
   }
 
-  // --- AI USAGE TRACKING ---
-  static async recordAiUsage(operation: 'analysis' | 'content_generation' | 'kdp' | 'keywords', keyword: string, tokens: number = 800): Promise<void> {
-    const todayStr = new Date().toISOString().slice(0, 10);
-    if (memoryCache.aiUsageToday.date !== todayStr) {
-      memoryCache.aiUsageToday = {
-        analyses: 0,
-        contentGenerations: 0,
-        tokens: 0,
-        date: todayStr,
-      };
+  static async attachCachedAnalysisScores(trends: TrendingSearch[]): Promise<TrendingSearch[]> {
+    if (!trends?.length) return trends;
+    const result = trends.map(t => ({ ...t }));
+    const supabase = getServerSupabaseClient();
+    const cutoff = new Date(Date.now() - ANALYSIS_TTL_MS).toISOString();
+    const scoreMap = new Map<string, number>();
+
+    for (const trend of result) {
+      const mem = memoryCache.analysis.get(this.getAnalysisKey(trend.keyword, trend.region));
+      if (mem && Date.now() - mem.timestamp < ANALYSIS_TTL_MS) scoreMap.set(`${trend.keyword.toLowerCase()}:${trend.region}`, mem.data.opportunity_score);
     }
 
-    if (operation === 'analysis') {
-      memoryCache.aiUsageToday.analyses += 1;
-    } else {
-      memoryCache.aiUsageToday.contentGenerations += 1;
+    if (supabase && !isTableMissing('trend_analysis')) {
+      try {
+        const keywords = result.map(t => t.keyword.trim());
+        const { data, error } = await supabase.from('trend_analysis')
+          .select('keyword,region,opportunity_score,created_at')
+          .in('keyword', keywords).gte('created_at', cutoff);
+        if (!error && data) {
+          for (const row of data) scoreMap.set(`${row.keyword.toLowerCase()}:${(row.region || 'ID').toUpperCase()}`, row.opportunity_score);
+        } else if (error && isTableMissingError(error)) recordTableMissing('trend_analysis');
+      } catch (error: any) {
+        if (!isTableMissingError(error)) console.warn('[CacheService] attachCachedAnalysisScores:', error.message || error);
+      }
     }
+
+    return result.map(t => {
+      const score = scoreMap.get(`${t.keyword.toLowerCase()}:${(t.region || 'ID').toUpperCase()}`);
+      return score === undefined ? t : { ...t, opportunity_score: score, is_ai_estimate: true };
+    });
+  }
+
+  static async recordAiUsage(operation: 'analysis' | 'content_generation' | 'kdp' | 'keywords', keyword: string, tokens = 800): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    if (memoryCache.aiUsageToday.date !== today) memoryCache.aiUsageToday = { analyses: 0, contentGenerations: 0, tokens: 0, date: today };
+    if (operation === 'analysis') memoryCache.aiUsageToday.analyses += 1;
+    else memoryCache.aiUsageToday.contentGenerations += 1;
     memoryCache.aiUsageToday.tokens += tokens;
 
     const supabase = getServerSupabaseClient();
-    if (supabase && !isTableMissing('ai_usage')) {
-      try {
-        const { error } = await supabase.from('ai_usage').insert({
-          operation,
-          keyword,
-          tokens_used: tokens,
-          created_at: new Date().toISOString(),
-        });
-        if (error && isTableMissingError(error)) {
-          recordTableMissing('ai_usage');
-        }
-      } catch (err: any) {
-        if (!isTableMissingError(err)) {
-          console.warn('Supabase recordAiUsage error:', err?.message || err);
-        }
-      }
+    if (!supabase || isTableMissing('ai_usage')) return;
+    try {
+      const { error } = await supabase.from('ai_usage').insert({ operation, keyword, tokens_used: tokens });
+      if (error && isTableMissingError(error)) recordTableMissing('ai_usage');
+    } catch (error: any) {
+      if (!isTableMissingError(error)) console.warn('[CacheService] recordAiUsage:', error.message || error);
     }
   }
 
   static async getAiUsageStats(): Promise<AiUsageStats> {
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const startOfToday = `${todayStr}T00:00:00.000Z`;
-
+    const startOfToday = new Date();
+    startOfToday.setUTCHours(0, 0, 0, 0);
     const supabase = getServerSupabaseClient();
     if (supabase && !isTableMissing('ai_usage')) {
       try {
-        const { data, error } = await supabase
-          .from('ai_usage')
-          .select('operation, tokens_used')
-          .gte('created_at', startOfToday);
-
-        if (error) {
-          if (isTableMissingError(error)) {
-            recordTableMissing('ai_usage');
-          }
-        } else if (data) {
-          let analyses = 0;
-          let contentGenerations = 0;
-          let tokens = 0;
-
-          for (const item of data) {
-            if (item.operation === 'analysis') {
-              analyses += 1;
-            } else {
-              contentGenerations += 1;
-            }
-            tokens += (item.tokens_used || 0);
-          }
-
+        const { data, error } = await supabase.from('ai_usage').select('operation,tokens_used').gte('created_at', startOfToday.toISOString());
+        if (!error && data) {
           return {
-            todayAnalyses: analyses,
-            todayContentGenerations: contentGenerations,
-            totalTokens: tokens,
+            todayAnalyses: data.filter(x => x.operation === 'analysis').length,
+            todayContentGenerations: data.filter(x => x.operation !== 'analysis').length,
+            totalTokens: data.reduce((sum, x) => sum + (x.tokens_used || 0), 0),
             lastUpdated: new Date().toISOString(),
           };
         }
-      } catch (err: any) {
-        if (!isTableMissingError(err)) {
-          console.warn('Supabase getAiUsageStats error:', err?.message || err);
-        }
+        if (error && isTableMissingError(error)) recordTableMissing('ai_usage');
+      } catch (error: any) {
+        if (!isTableMissingError(error)) console.warn('[CacheService] getAiUsageStats:', error.message || error);
       }
     }
-
     return {
       todayAnalyses: memoryCache.aiUsageToday.analyses,
       todayContentGenerations: memoryCache.aiUsageToday.contentGenerations,
@@ -502,51 +309,18 @@ export class CacheService {
     };
   }
 
-  // --- DATABASE & SCHEMA READINESS CHECK ---
-  static async getDatabaseStatus(): Promise<{
-    configured: boolean;
-    connected: boolean;
-    schemaReady: boolean;
-    missingTables: string[];
-    usingMemoryFallback: boolean;
-  }> {
+  static async getDatabaseStatus(): Promise<{ configured: boolean; connected: boolean; schemaReady: boolean; missingTables: string[]; usingMemoryFallback: boolean }> {
     const supabase = getServerSupabaseClient();
-    if (!supabase) {
-      return {
-        configured: false,
-        connected: false,
-        schemaReady: false,
-        missingTables: [],
-        usingMemoryFallback: true,
-      };
-    }
-
-    const checkTables = ['trends', 'trend_analysis', 'saved_trends', 'ai_usage'];
+    if (!supabase) return { configured: false, connected: false, schemaReady: false, missingTables: [], usingMemoryFallback: true };
+    const tables = ['trends', 'trend_analysis', 'keyword_ideas', 'content_ideas', 'saved_trends', 'trend_history', 'alerts', 'ai_usage'];
     const missing: string[] = [];
-
-    for (const tableName of checkTables) {
-      if (isTableMissing(tableName)) {
-        missing.push(tableName);
-        continue;
-      }
+    for (const table of tables) {
+      if (isTableMissing(table)) { missing.push(table); continue; }
       try {
-        const { error } = await supabase.from(tableName).select('id').limit(1);
-        if (error && isTableMissingError(error)) {
-          recordTableMissing(tableName);
-          missing.push(tableName);
-        }
-      } catch {
-        recordTableMissing(tableName);
-        missing.push(tableName);
-      }
+        const { error } = await supabase.from(table).select('id').limit(1);
+        if (error) { if (isTableMissingError(error)) { recordTableMissing(table); missing.push(table); } }
+      } catch { recordTableMissing(table); missing.push(table); }
     }
-
-    return {
-      configured: true,
-      connected: true,
-      schemaReady: missing.length === 0,
-      missingTables: missing,
-      usingMemoryFallback: missing.length > 0,
-    };
+    return { configured: true, connected: true, schemaReady: missing.length === 0, missingTables: missing, usingMemoryFallback: missing.length > 0 };
   }
 }
