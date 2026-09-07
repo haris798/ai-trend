@@ -17,10 +17,19 @@ import { CheckCircle2 } from 'lucide-react';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<PageView>('dashboard');
-  const [selectedRegion, setSelectedRegion] = useState<string>('ID');
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('24h');
+  const [selectedRegion, setSelectedRegion] = useState<string>(() => {
+    try { return localStorage.getItem('ai_trend_region') || 'ID'; } catch { return 'ID'; }
+  });
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string>(() => {
+    try { return localStorage.getItem('ai_trend_timeframe') || '24h'; } catch { return '24h'; }
+  });
   const [selectedCategory, setSelectedCategory] = useState<string>(() => {
-    try { return localStorage.getItem('ai_trend_category') || 'Technology'; } catch { return 'Technology'; }
+    try {
+      const saved = localStorage.getItem('ai_trend_category');
+      return saved && saved.trim() ? saved : 'All';
+    } catch {
+      return 'All';
+    }
   });
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [trends, setTrends] = useState<TrendingSearch[]>([]);
@@ -53,6 +62,18 @@ export default function App() {
     if (darkMode) { root.classList.add('dark'); localStorage.setItem('ai_trend_theme', 'dark'); }
     else { root.classList.remove('dark'); localStorage.setItem('ai_trend_theme', 'light'); }
   }, [darkMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ai_trend_region', selectedRegion); } catch { /* ignore */ }
+  }, [selectedRegion]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ai_trend_timeframe', selectedTimeframe); } catch { /* ignore */ }
+  }, [selectedTimeframe]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ai_trend_category', selectedCategory); } catch { /* ignore */ }
+  }, [selectedCategory]);
 
   useEffect(() => {
     try { localStorage.setItem('ai_trend_saved', JSON.stringify(savedTrends)); } catch { /* ignore persistence errors */ }
@@ -167,7 +188,7 @@ export default function App() {
         <Navbar onOpenMobile={() => setMobileSidebarOpen(true)} selectedRegion={selectedRegion} onSelectRegion={setSelectedRegion} selectedTimeframe={selectedTimeframe} onSelectTimeframe={setSelectedTimeframe} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} onRefresh={() => fetchTrends(true)} loading={loadingTrends} aiUsage={aiUsage} trends={trends} onShowToast={showToast} onOpenExport={() => handleOpenExport(trends)} onOpenSettings={() => setCurrentView('settings')} />
         <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto">
           {currentView === 'dashboard' && <DashboardView trends={trends} loading={loadingTrends} error={trendError} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onRefresh={() => fetchTrends(true)} onSelectCategory={setSelectedCategory} />}
-          {currentView === 'trending' && <TrendingView trends={trends} loading={loadingTrends} selectedRegion={selectedRegion} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onShowToast={showToast} onOpenExport={handleOpenExport} />}
+          {currentView === 'trending' && <TrendingView trends={trends} loading={loadingTrends} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onShowToast={showToast} onOpenExport={handleOpenExport} />}
           {currentView === 'saved' && <SavedView savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onRemoveSaved={handleRemoveSaved} onShowToast={showToast} onOpenExport={handleOpenExport} />}
           {currentView === 'history' && <HistoryView currentTrends={trends} selectedRegion={selectedRegion} onSelectTrend={setSelectedTrend} />}
           {currentView === 'compare' && <CompareView trends={trends} onSelectTrend={setSelectedTrend} />}

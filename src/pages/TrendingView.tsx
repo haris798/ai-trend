@@ -12,6 +12,7 @@ interface Props {
   trends: TrendingSearch[];
   loading: boolean;
   selectedRegion: string;
+  selectedCategory?: string;
   savedTrends: TrendingSearch[];
   onSelectTrend: (trend: TrendingSearch) => void;
   onToggleSave: (trend: TrendingSearch) => void;
@@ -23,6 +24,7 @@ export const TrendingView: React.FC<Props> = ({
   trends,
   loading,
   selectedRegion,
+  selectedCategory,
   savedTrends,
   onSelectTrend,
   onToggleSave,
@@ -36,7 +38,11 @@ export const TrendingView: React.FC<Props> = ({
   const savedIds = new Set(savedTrends.map((s) => s.id));
 
   const filteredTrends = trends
-    .filter((t) => t.keyword.toLowerCase().includes(searchQuery.toLowerCase()) || t.category.toLowerCase().includes(searchQuery.toLowerCase()))
+    .filter((t) => {
+      const matchesCategory = !selectedCategory || selectedCategory === 'All' || t.category.toLowerCase() === selectedCategory.toLowerCase();
+      const matchesSearch = !searchQuery || t.keyword.toLowerCase().includes(searchQuery.toLowerCase()) || t.category.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchesCategory && matchesSearch;
+    })
     .sort((a, b) => {
       if (sortBy === 'score') {
         return (b.opportunity_score ?? 0) - (a.opportunity_score ?? 0);

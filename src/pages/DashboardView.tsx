@@ -124,14 +124,32 @@ export const DashboardView: React.FC<Props> = ({
               </div>
             ))}
           </div>
+        ) : trends.length === 0 ? (
+          <div className="py-16 text-center rounded-2xl border border-white/10 bg-slate-800/40 backdrop-blur-md p-8 space-y-3">
+            <TrendingUp className="w-8 h-8 text-slate-400 mx-auto" />
+            <p className="text-sm font-bold text-slate-200">
+              Belum ada data tren yang dimuat
+            </p>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto">
+              Tren pencarian untuk wilayah {selectedRegion} belum tersedia. Silakan klik tombol refresh di bawah untuk memuat.
+            </p>
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-xs font-semibold text-white transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Refresh Tren</span>
+            </button>
+          </div>
         ) : filteredTrends.length === 0 ? (
           <div className="py-16 text-center rounded-2xl border border-white/10 bg-slate-800/40 backdrop-blur-md p-8 space-y-3">
             <Filter className="w-8 h-8 text-slate-400 mx-auto" />
             <p className="text-sm font-bold text-slate-200">
-              No trends matching category "{selectedCategory}"
+              Tidak ada tren kategori "{selectedCategory}"
             </p>
             <p className="text-xs text-slate-400 max-w-sm mx-auto">
-              No current daily searches matched the {selectedCategory} category in this region. You can switch to All Categories or choose another country.
+              Tidak ditemukan tren harian dalam kategori "{selectedCategory}" untuk wilayah {selectedRegion}. Anda dapat beralih ke Semua Kategori.
             </p>
             {onSelectCategory && (
               <button
@@ -139,7 +157,7 @@ export const DashboardView: React.FC<Props> = ({
                 onClick={() => onSelectCategory('All')}
                 className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-xs font-semibold text-white transition-colors"
               >
-                View All Categories
+                Lihat Semua Kategori
               </button>
             )}
           </div>
