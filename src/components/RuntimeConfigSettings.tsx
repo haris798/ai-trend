@@ -1,21 +1,24 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Database, KeyRound, Save, ShieldCheck } from 'lucide-react';
+import { Check, Database, KeyRound, Save, ShieldCheck, Sparkles, Eye, EyeOff } from 'lucide-react';
 
 const STORAGE_KEY = 'ai_trend_runtime_config';
 
 type RuntimeConfig = {
   supabaseUrl: string;
   supabaseAnonKey: string;
+  geminiApiKey: string;
 };
 
 const DEFAULT_CONFIG: RuntimeConfig = {
   supabaseUrl: 'https://tvirwhgvujcdutijggss.supabase.co',
   supabaseAnonKey: '',
+  geminiApiKey: '',
 };
 
 export const RuntimeConfigSettings: React.FC = () => {
   const [config, setConfig] = useState<RuntimeConfig>(DEFAULT_CONFIG);
   const [saved, setSaved] = useState(false);
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
 
   useEffect(() => {
     try {
@@ -44,7 +47,7 @@ export const RuntimeConfigSettings: React.FC = () => {
           Runtime Configuration
         </h3>
         <p className="text-xs text-slate-400 mt-1">
-          Configure browser-safe Supabase settings. Server secrets are intentionally excluded from browser storage.
+          Configure browser-local connection settings. Server-side secrets remain in Vercel environment variables.
         </p>
       </div>
 
@@ -73,10 +76,40 @@ export const RuntimeConfigSettings: React.FC = () => {
         />
       </div>
 
+      <div className="space-y-2">
+        <label htmlFor="runtime-gemini-key" className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+          Personal Gemini API Key
+        </label>
+        <div className="relative">
+          <input
+            id="runtime-gemini-key"
+            type={showGeminiKey ? 'text' : 'password'}
+            value={config.geminiApiKey}
+            onChange={(e) => setConfig(prev => ({ ...prev, geminiApiKey: e.target.value }))}
+            className="w-full px-4 py-2.5 pr-11 rounded-xl bg-slate-950/60 border border-white/10 text-xs text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+            placeholder="AIza..."
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            onClick={() => setShowGeminiKey(prev => !prev)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-500 hover:text-slate-200 transition-colors"
+            title={showGeminiKey ? 'Hide Gemini API key' : 'Show Gemini API key'}
+          >
+            {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          </button>
+        </div>
+        <p className="text-[11px] text-amber-300/80 leading-relaxed">
+          Browser-local only. This value is stored in this browser and is <strong>not</strong> copied to Vercel or used as the server-side Gemini secret. For production server-side AI, configure <code className="text-slate-200">GEMINI_API_KEY</code> in Vercel.
+        </p>
+      </div>
+
       <div className="flex items-start gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/15">
         <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
         <p className="text-[11px] text-slate-400 leading-relaxed">
-          Safe for browser configuration: Supabase URL and anon/publishable key are intended for client use. Never enter <code className="text-slate-300">SUPABASE_SERVICE_ROLE_KEY</code> here.
+          Safe browser configuration: Supabase URL and anon/publishable key are intended for client use. Never enter <code className="text-slate-300">SUPABASE_SERVICE_ROLE_KEY</code> here.
         </p>
       </div>
 
