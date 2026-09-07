@@ -122,6 +122,10 @@ export interface AiUsageStats {
   todayContentGenerations: number;
   totalTokens: number;
   lastUpdated: string;
+  tier?: 'free' | 'pro_byok';
+  dailyLimit?: number | null;
+  remainingToday?: number | null;
+  isQuotaExceeded?: boolean;
 }
 
 export interface TrendingResponse {

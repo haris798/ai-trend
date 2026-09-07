@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import {
   X, Sparkles, TrendingUp, Search, Target, DollarSign, BookOpen,
   Share2, Copy, Check, RefreshCw, AlertCircle, Layers, CheckCircle2,
-  FileText, Video, Smartphone, Pin, ExternalLink, BarChart3, Database
+  FileText, Video, Smartphone, Pin, ExternalLink, BarChart3, Database, Key
 } from 'lucide-react';
 import { TrendingSearch, TrendAnalysis, KdpAnalysisResult, MonetizationChannel } from '../types';
 import { OpportunityScoreBadge } from './OpportunityScoreBadge';
+import { getApiHeaders } from '../utils/clientId';
 
 interface Props {
   trend: TrendingSearch | null;
@@ -13,6 +14,7 @@ interface Props {
   onSaveToggle: (trend: TrendingSearch) => void;
   isSaved?: boolean;
   onRefreshUsage?: () => void;
+  onOpenSettings?: () => void;
 }
 
 type TabType = 'overview' | 'keywords' | 'content' | 'kdp' | 'monetization';
@@ -23,6 +25,7 @@ export const TrendDetailModal: React.FC<Props> = ({
   onSaveToggle,
   isSaved,
   onRefreshUsage,
+  onOpenSettings,
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
 
@@ -30,6 +33,9 @@ export const TrendDetailModal: React.FC<Props> = ({
   const [analysis, setAnalysis] = useState<TrendAnalysis | null>(null);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
+  const [byokInput, setByokInput] = useState('');
+  const [savingByok, setSavingByok] = useState(false);
   const [isCached, setIsCached] = useState(false);
   const [ttlHoursLeft, setTtlHoursLeft] = useState<number | null>(null);
 
@@ -67,6 +73,27 @@ export const TrendDetailModal: React.FC<Props> = ({
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
+  const handleSaveByokInline = (e: React.FormEvent) => {
+    e.preventDefault();
+    const key = byokInput.trim();
+    if (!key || key.length < 10) return;
+    setSavingByok(true);
+    try {
+      const stored = localStorage.getItem('ai_trend_runtime_config');
+      const cfg = stored ? JSON.parse(stored) : {};
+      cfg.geminiApiKey = key;
+      localStorage.setItem('ai_trend_runtime_config', JSON.stringify(cfg));
+      setQuotaExceeded(false);
+      setAnalysisError(null);
+      if (onRefreshUsage) onRefreshUsage();
+      fetchAnalysis(true);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingByok(false);
+    }
+  };
+
   const fetchAnalysis = async (force = false) => {
     if (!trend) return;
     setLoadingAnalysis(true);
@@ -75,7 +102,7 @@ export const TrendDetailModal: React.FC<Props> = ({
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           keyword: trend.keyword,
           region: trend.region,
@@ -90,10 +117,16 @@ export const TrendDetailModal: React.FC<Props> = ({
       });
 
       const json = await res.json();
+      if (res.status === 429 || json.quotaExceeded) {
+        setQuotaExceeded(true);
+        throw new Error(json.error || 'Batas kuota harian Free Tier tercapai (5/5 analisis).');
+      }
+
       if (!res.ok || !json.success) {
         throw new Error(json.error || 'Failed to analyze trend with Gemini AI');
       }
 
+      setQuotaExceeded(false);
       setAnalysis(json.data);
       setIsCached(Boolean(json.cached));
       if (json.ttlRemainingMs) {
@@ -115,7 +148,7 @@ export const TrendDetailModal: React.FC<Props> = ({
     try {
       const res = await fetch('/api/expand-keywords', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ keyword: trend.keyword, region: trend.region }),
       });
       const json = await res.json();
@@ -134,7 +167,7 @@ export const TrendDetailModal: React.FC<Props> = ({
     try {
       const res = await fetch('/api/generate-content', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ keyword: trend.keyword, region: trend.region, analysis }),
       });
       const json = await res.json();
@@ -153,7 +186,7 @@ export const TrendDetailModal: React.FC<Props> = ({
     try {
       const res = await fetch('/api/generate-kdp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ keyword: trend.keyword, region: trend.region }),
       });
       const json = await res.json();
@@ -172,7 +205,7 @@ export const TrendDetailModal: React.FC<Props> = ({
     try {
       const res = await fetch('/api/monetization', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ keyword: trend.keyword, region: trend.region, category: trend.category }),
       });
       const json = await res.json();
@@ -333,6 +366,75 @@ export const TrendDetailModal: React.FC<Props> = ({
 
         {/* Tab Content Area */}
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
+          {quotaExceeded && (
+            <div className="p-5 rounded-2xl bg-gradient-to-br from-indigo-950/80 via-slate-900/90 to-purple-950/80 border border-indigo-500/30 backdrop-blur-xl shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shrink-0">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <h4 className="font-bold text-sm text-white flex items-center gap-2">
+                      <span>Batas Kuota Analisis Harian Tercapai (5/5)</span>
+                    </h4>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 font-bold border border-rose-500/30">
+                      FREE TIER
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Anda telah mencapai batas 5 analisis gratis hari ini. Masukkan <strong>Gemini API Key pribadi</strong> Anda untuk langsung mengaktifkan <strong>Pro Tier (Unlimited)</strong> tanpa batas harian.
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveByokInline} className="flex flex-col sm:flex-row gap-2 pt-1">
+                <input
+                  type="password"
+                  placeholder="Tempelkan Gemini API Key pribadi (AIzaSy...)"
+                  value={byokInput}
+                  onChange={(e) => setByokInput(e.target.value)}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950/80 border border-white/15 text-xs text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                  autoComplete="off"
+                />
+                <button
+                  type="submit"
+                  disabled={!byokInput.trim() || savingByok}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all shadow-lg shadow-indigo-600/30 disabled:opacity-50 flex items-center justify-center gap-1.5 shrink-0"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{savingByok ? 'Mengaktifkan...' : 'Aktifkan Pro (Unlimited)'}</span>
+                </button>
+              </form>
+
+              <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 flex-wrap gap-2">
+                <span>Belum punya API key? Gratis dari Google AI Studio:</span>
+                <a
+                  href="https://aistudio.google.com/app/apikey"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 underline underline-offset-2"
+                >
+                  Dapatkan Gemini API Key <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            </div>
+          )}
+
+          {analysisError && !quotaExceeded && (
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{analysisError}</span>
+              </div>
+              <button
+                onClick={() => fetchAnalysis(true)}
+                className="px-3 py-1 rounded-lg bg-rose-600 text-white font-semibold text-xs hover:bg-rose-500 shrink-0"
+              >
+                Coba Lagi
+              </button>
+            </div>
+          )}
+
           {/* TAB 1: OVERVIEW & GEMINI ANALYSIS */}
           {activeTab === 'overview' && (
             <div className="space-y-6">

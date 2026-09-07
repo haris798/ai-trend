@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
+  "name": "ai-trend-research",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "AI Trend Research Engine - Real-time Google Trends analysis, content generation, and monetization intelligence powered by Google Gemini AI.",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

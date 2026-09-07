@@ -7,12 +7,14 @@ export default async function handler(req: any, res: any) {
   }
 
   const { keyword, region, analysis } = req.body || {};
+  const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
+
   if (!keyword) {
     return res.status(400).json({ error: 'Keyword is required.' });
   }
 
   try {
-    const ideas = await GeminiTrendService.generateContentIdeas(keyword, region || 'ID', analysis);
+    const ideas = await GeminiTrendService.generateContentIdeas(keyword, region || 'ID', analysis, customApiKey);
     await CacheService.recordAiUsage('content_generation', keyword, 1200);
     return res.status(200).json({ success: true, data: ideas });
   } catch (error: any) {

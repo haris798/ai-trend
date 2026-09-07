@@ -20,6 +20,7 @@ interface Props {
   trends: TrendingSearch[];
   onShowToast: (message: string) => void;
   onOpenExport?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const COUNTRIES = [
@@ -65,6 +66,7 @@ export const Navbar: React.FC<Props> = ({
   trends,
   onShowToast,
   onOpenExport,
+  onOpenSettings,
 }) => {
   // Sync selectedCategory to localStorage whenever it changes
   useEffect(() => {
@@ -133,7 +135,7 @@ export const Navbar: React.FC<Props> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            <AiUsageBadge stats={aiUsage} />
+            <AiUsageBadge stats={aiUsage} onOpenSettings={onOpenSettings} />
           </div>
         </div>
 

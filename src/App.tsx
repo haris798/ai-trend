@@ -12,7 +12,7 @@ import { RuntimeConfigSettings } from './components/RuntimeConfigSettings';
 import { TrendDetailModal } from './components/TrendDetailModal';
 import { ExportModal } from './components/ExportModal';
 import { TrendingSearch, AiUsageStats } from './types';
-import { supabase } from './lib/supabase';
+import { getClientId, getApiHeaders } from './utils/clientId';
 import { CheckCircle2 } from 'lucide-react';
 
 export default function App() {
@@ -75,43 +75,74 @@ export default function App() {
 
   const fetchAiUsage = useCallback(async () => {
     try {
-      const res = await fetch('/api/ai-usage');
+      const res = await fetch('/api/ai-usage', {
+        headers: getApiHeaders(),
+      });
       const json = await res.json();
       if (json.success) setAiUsage(json.data);
     } catch (e) { console.error('Failed to fetch AI usage stats:', e); }
   }, []);
 
-  useEffect(() => { fetchTrends(false); fetchAiUsage(); }, [fetchTrends, fetchAiUsage]);
+  const fetchSavedTrends = useCallback(async () => {
+    try {
+      const clientId = getClientId();
+      const res = await fetch('/api/saved-trends', {
+        headers: { 'x-client-id': clientId },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+          setSavedTrends(json.data);
+        }
+      }
+    } catch (e) {
+      console.debug('Using local saved trends fallback:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTrends(false);
+    fetchAiUsage();
+    fetchSavedTrends();
+  }, [fetchTrends, fetchAiUsage, fetchSavedTrends]);
 
   const handleToggleSave = useCallback((trend: TrendingSearch) => {
+    const clientId = getClientId();
     const isAlreadySaved = savedTrends.some((s) => s.id === trend.id);
+
     if (isAlreadySaved) {
       setSavedTrends(prev => prev.filter((s) => s.id !== trend.id));
       showToast(`Removed "${trend.keyword}" from saved trends`);
+
+      fetch(`/api/saved-trends?id=${encodeURIComponent(trend.id)}`, {
+        method: 'DELETE',
+        headers: { 'x-client-id': clientId },
+      }).catch((e) => console.debug('Saved trend delete sync:', e));
       return;
     }
 
     setSavedTrends(prev => [trend, ...prev.filter(s => s.id !== trend.id)]);
     showToast(`Saved "${trend.keyword}" to bookmarks`);
 
-    if (supabase) {
-      Promise.resolve(
-        supabase.from('saved_trends').insert({
-          trend_id: trend.id,
-          trend_data: trend,
-          client_id: 'legacy-client',
-        })
-      ).then(({ error }) => {
-        if (error && error.code !== 'PGRST205' && !error.message?.includes('schema cache')) {
-          console.debug('Supabase saved_trends sync note:', error.message);
-        }
-      }).catch(() => {});
-    }
+    fetch('/api/saved-trends', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-id': clientId,
+      },
+      body: JSON.stringify({ trend }),
+    }).catch((e) => console.debug('Saved trend add sync:', e));
   }, [savedTrends, showToast]);
 
   const handleRemoveSaved = useCallback((id: string) => {
+    const clientId = getClientId();
     setSavedTrends(prev => prev.filter(s => s.id !== id));
     showToast('Trend removed from saved');
+
+    fetch(`/api/saved-trends?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'x-client-id': clientId },
+    }).catch((e) => console.debug('Saved trend delete sync:', e));
   }, [showToast]);
 
   return (
@@ -122,7 +153,7 @@ export default function App() {
       {toastMessage && <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900/90 dark:bg-white/10 text-white dark:text-slate-100 text-xs font-semibold shadow-2xl border border-white/20 backdrop-blur-xl animate-in fade-in slide-in-from-bottom-3 duration-200"><CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /><span>{toastMessage}</span></div>}
       <Sidebar currentView={currentView} onSelectView={setCurrentView} savedCount={savedTrends.length} darkMode={darkMode} onToggleDarkMode={() => setDarkMode(!darkMode)} isOpenMobile={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} />
       <div className="lg:pl-64 flex flex-col min-h-screen">
-        <Navbar onOpenMobile={() => setMobileSidebarOpen(true)} selectedRegion={selectedRegion} onSelectRegion={setSelectedRegion} selectedTimeframe={selectedTimeframe} onSelectTimeframe={setSelectedTimeframe} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} onRefresh={() => fetchTrends(true)} loading={loadingTrends} aiUsage={aiUsage} trends={trends} onShowToast={showToast} onOpenExport={() => handleOpenExport(trends)} />
+        <Navbar onOpenMobile={() => setMobileSidebarOpen(true)} selectedRegion={selectedRegion} onSelectRegion={setSelectedRegion} selectedTimeframe={selectedTimeframe} onSelectTimeframe={setSelectedTimeframe} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} onRefresh={() => fetchTrends(true)} loading={loadingTrends} aiUsage={aiUsage} trends={trends} onShowToast={showToast} onOpenExport={() => handleOpenExport(trends)} onOpenSettings={() => setCurrentView('settings')} />
         <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto">
           {currentView === 'dashboard' && <DashboardView trends={trends} loading={loadingTrends} error={trendError} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onRefresh={() => fetchTrends(true)} onSelectCategory={setSelectedCategory} />}
           {currentView === 'trending' && <TrendingView trends={trends} loading={loadingTrends} selectedRegion={selectedRegion} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onShowToast={showToast} onOpenExport={handleOpenExport} />}
@@ -133,7 +164,7 @@ export default function App() {
           {currentView === 'settings' && <div className="space-y-6"><RuntimeConfigSettings /><SettingsView /></div>}
         </main>
       </div>
-      {selectedTrend && <TrendDetailModal trend={selectedTrend} onClose={() => setSelectedTrend(null)} onSaveToggle={handleToggleSave} isSaved={savedTrends.some((s) => s.id === selectedTrend.id)} onRefreshUsage={fetchAiUsage} />}
+      {selectedTrend && <TrendDetailModal trend={selectedTrend} onClose={() => setSelectedTrend(null)} onSaveToggle={handleToggleSave} isSaved={savedTrends.some((s) => s.id === selectedTrend.id)} onRefreshUsage={fetchAiUsage} onOpenSettings={() => { setSelectedTrend(null); setCurrentView('settings'); }} />}
       <ExportModal isOpen={isExportOpen} onClose={() => setIsExportOpen(false)} trends={exportTrendsData.length > 0 ? exportTrendsData : trends} region={selectedRegion} category={selectedCategory} onShowToast={showToast} />
     </div>
   );

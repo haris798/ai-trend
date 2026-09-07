@@ -7,6 +7,9 @@ export default async function handler(req: any, res: any) {
   }
 
   const { keyword, region, category, trendData, forceRefresh } = req.body || {};
+  const clientId = String(req.headers['x-client-id'] || req.body?.clientId || 'default-client').trim();
+  const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
+  const hasByok = Boolean(customApiKey && customApiKey.length > 10);
 
   if (!keyword) {
     return res.status(400).json({ error: 'Keyword is required for analysis.' });
@@ -38,28 +41,44 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // 2. Cache miss or forced refresh: Execute Gemini Analysis
+    // 2. Check Quota before executing live AI generation
+    const quota = await CacheService.checkClientQuota(clientId, hasByok);
+    if (quota.isQuotaExceeded) {
+      return res.status(429).json({
+        success: false,
+        error: 'Batas kuota harian Free Tier tercapai (5/5 analisis hari ini). Masukkan Gemini API Key pribadi Anda di menu Settings (BYOK) untuk akses tanpa batas, atau tunggu reset kuota besok.',
+        quotaExceeded: true,
+        tier: 'free',
+        dailyLimit: quota.dailyLimit,
+        usedToday: quota.usedToday,
+        remaining: quota.remaining,
+      });
+    }
+
+    // 3. Cache miss or forced refresh: Execute Gemini Analysis
     const analysis = await GeminiTrendService.analyzeTrend(
       keyword,
       reg,
       category || 'General',
-      trendData || {}
+      trendData || {},
+      customApiKey
     );
 
-    // 3. Save to Supabase 24h Cache & Track Usage
+    // 4. Save to Supabase 24h Cache & Track Usage
     await CacheService.setAnalysis(analysis);
-    await CacheService.recordAiUsage('analysis', keyword, 900);
+    await CacheService.recordClientAnalysis(clientId, keyword, 900);
 
     res.setHeader?.('X-Cache', 'MISS');
-    res.setHeader?.('X-Cache-Source', 'gemini_api');
+    res.setHeader?.('X-Cache-Source', hasByok ? 'gemini_byok' : 'gemini_3.8_flash');
 
     return res.status(200).json({
       success: true,
       cached: false,
-      source: 'gemini_3.8_flash',
+      source: hasByok ? 'gemini_byok' : 'gemini_3.8_flash',
       ttlRemainingMs: 24 * 60 * 60 * 1000,
       cachedAt: analysis.created_at || new Date().toISOString(),
       data: analysis,
+      tier: quota.tier,
     });
   } catch (error: any) {
     return res.status(500).json({

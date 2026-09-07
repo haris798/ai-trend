@@ -3,10 +3,18 @@ import { TrendAnalysis, KdpAnalysisResult, MonetizationChannel } from '../../typ
 
 let genAiClient: GoogleGenAI | null = null;
 
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+function getGeminiClient(customApiKey?: string): GoogleGenAI {
+  const customKey = customApiKey?.trim();
+  const apiKey = (customKey && customKey.length > 10 ? customKey : null) || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY environment variable is required for AI Trend Analysis.');
+    throw new Error('GEMINI_API_KEY environment variable is required, or enter your personal Gemini API key in Settings (BYOK).');
+  }
+
+  if (customKey && customKey.length > 10) {
+    return new GoogleGenAI({
+      apiKey: customKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-byok' } },
+    });
   }
 
   if (!genAiClient) {
@@ -25,8 +33,8 @@ function getGeminiClient(): GoogleGenAI {
 /**
  * Resilient Gemini caller with automatic model fallback to handle temporary 503 spikes.
  */
-async function generateStructuredJson(prompt: string, temperature = 0.3): Promise<any> {
-  const ai = getGeminiClient();
+async function generateStructuredJson(prompt: string, temperature = 0.3, customApiKey?: string): Promise<any> {
+  const ai = getGeminiClient(customApiKey);
   const modelsToTry = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.1-pro-preview'];
   let lastError: any = null;
 
@@ -65,7 +73,8 @@ export class GeminiTrendService {
     keyword: string,
     region: string,
     category: string,
-    trendData: { traffic?: string; rank?: number; newsSnippet?: string }
+    trendData: { traffic?: string; rank?: number; newsSnippet?: string },
+    customApiKey?: string
   ): Promise<TrendAnalysis> {
     const prompt = `You are a world-class digital trend analyst, SEO strategist, and monetization consultant.
 Analyze the following trending search term:
@@ -101,7 +110,7 @@ Return ONLY a valid JSON object strictly matching this schema:
 
     let parsed: any;
     try {
-      parsed = await generateStructuredJson(prompt, 0.3);
+      parsed = await generateStructuredJson(prompt, 0.3, customApiKey);
     } catch (apiErr) {
       console.warn('Gemini live API unavailable, using intelligent heuristic fallback for opportunity score:', apiErr);
       // Resilient fallback based on actual real trends ranking and traffic
@@ -165,7 +174,7 @@ Return ONLY a valid JSON object strictly matching this schema:
   /**
    * Phase 3: Keyword Expansion
    */
-  static async expandKeywords(keyword: string, region: string): Promise<Record<string, string[]>> {
+  static async expandKeywords(keyword: string, region: string, customApiKey?: string): Promise<Record<string, string[]>> {
     const prompt = `Expand the keyword "${keyword}" for audience in region "${region}".
 Generate categorized keyword variations for SEO and content creation.
 Do NOT invent fake search volume numbers. Label all ideas as AI Generated keyword hypotheses.
@@ -180,7 +189,7 @@ Return ONLY a valid JSON object matching this schema:
 }`;
 
     try {
-      return await generateStructuredJson(prompt, 0.4);
+      return await generateStructuredJson(prompt, 0.4, customApiKey);
     } catch {
       return {
         related: [
@@ -217,7 +226,7 @@ Return ONLY a valid JSON object matching this schema:
   /**
    * Phase 3: Content Generator
    */
-  static async generateContentIdeas(keyword: string, region: string, analysis?: TrendAnalysis): Promise<{
+  static async generateContentIdeas(keyword: string, region: string, analysis?: TrendAnalysis, customApiKey?: string): Promise<{
     blog: Array<{ title: string; angle: string; audience: string; monetization: string }>;
     youtube: Array<{ title: string; hook: string; concept: string; monetization: string }>;
     tiktok: Array<{ hook: string; concept: string; format: string; monetization: string }>;
@@ -235,7 +244,7 @@ Return ONLY valid JSON matching this schema:
 }`;
 
     try {
-      return await generateStructuredJson(prompt, 0.5);
+      return await generateStructuredJson(prompt, 0.5, customApiKey);
     } catch {
       return {
         blog: Array.from({ length: 10 }).map((_, i) => ({
@@ -275,7 +284,7 @@ Return ONLY valid JSON matching this schema:
   /**
    * Phase 3: KDP Opportunity Analysis & Outlines
    */
-  static async analyzeKdp(keyword: string, region: string): Promise<KdpAnalysisResult> {
+  static async analyzeKdp(keyword: string, region: string, customApiKey?: string): Promise<KdpAnalysisResult> {
     const prompt = `Analyze Amazon KDP self-publishing opportunity for trending keyword "${keyword}" in region "${region}".
 Return ONLY valid JSON matching this schema:
 {
@@ -298,7 +307,7 @@ Return ONLY valid JSON matching this schema:
 }`;
 
     try {
-      return await generateStructuredJson(prompt, 0.5);
+      return await generateStructuredJson(prompt, 0.4, customApiKey);
     } catch {
       return {
         kdpPotential: 82,
@@ -328,7 +337,7 @@ Return ONLY valid JSON matching this schema:
   /**
    * Phase 3: Monetization Analysis Across 7 Channels
    */
-  static async analyzeMonetization(keyword: string, region: string, category: string): Promise<MonetizationChannel[]> {
+  static async analyzeMonetization(keyword: string, region: string, category: string, customApiKey?: string): Promise<MonetizationChannel[]> {
     const prompt = `Analyze monetization for "${keyword}" (${category}, ${region}) across 7 channels: Affiliate, Ads, Digital Product, KDP, YouTube, Newsletter, Services.
 Return ONLY valid JSON array matching this schema:
 [
@@ -341,7 +350,7 @@ Return ONLY valid JSON array matching this schema:
 ]`;
 
     try {
-      const channels = await generateStructuredJson(prompt, 0.4);
+      const channels = await generateStructuredJson(prompt, 0.4, customApiKey);
       return Array.isArray(channels) ? channels : [];
     } catch {
       return [

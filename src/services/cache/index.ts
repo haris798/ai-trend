@@ -6,10 +6,15 @@ const ANALYSIS_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface CacheEntry<T> { data: T; timestamp: number; }
 
+export const FREE_TIER_DAILY_LIMIT = 5;
+
 const memoryCache = {
   trending: new Map<string, CacheEntry<TrendingSearch[]>>(),
   analysis: new Map<string, CacheEntry<TrendAnalysis>>(),
   aiUsageToday: { analyses: 0, contentGenerations: 0, tokens: 0, date: new Date().toISOString().slice(0, 10) },
+  clientUsageToday: new Map<string, { count: number; date: string }>(),
+  savedTrends: new Map<string, any[]>(),
+  alerts: new Map<string, any[]>(),
 };
 
 let cachedSupabaseClient: SupabaseClient | null = null;
@@ -281,32 +286,128 @@ export class CacheService {
     }
   }
 
-  static async getAiUsageStats(): Promise<AiUsageStats> {
-    const startOfToday = new Date();
-    startOfToday.setUTCHours(0, 0, 0, 0);
+  static async getClientAnalysisUsageToday(clientId: string): Promise<number> {
+    const today = new Date().toISOString().slice(0, 10);
+    const mem = memoryCache.clientUsageToday.get(clientId);
+    const memCount = (mem && mem.date === today) ? mem.count : 0;
+
     const supabase = getServerSupabaseClient();
     if (supabase && !isTableMissing('ai_usage')) {
       try {
-        const { data, error } = await supabase.from('ai_usage').select('operation,tokens_used').gte('created_at', startOfToday.toISOString());
+        const startOfToday = new Date();
+        startOfToday.setUTCHours(0, 0, 0, 0);
+        const { data, error } = await supabase
+          .from('ai_usage')
+          .select('id')
+          .eq('operation', `analysis:${clientId}`)
+          .gte('created_at', startOfToday.toISOString());
         if (!error && data) {
-          return {
-            todayAnalyses: data.filter(x => x.operation === 'analysis').length,
-            todayContentGenerations: data.filter(x => x.operation !== 'analysis').length,
-            totalTokens: data.reduce((sum, x) => sum + (x.tokens_used || 0), 0),
-            lastUpdated: new Date().toISOString(),
-          };
+          return Math.max(memCount, data.length);
         }
         if (error && isTableMissingError(error)) recordTableMissing('ai_usage');
-      } catch (error: any) {
-        if (!isTableMissingError(error)) console.warn('[CacheService] getAiUsageStats:', error.message || error);
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] getClientAnalysisUsageToday:', err.message || err);
       }
     }
+    return memCount;
+  }
+
+  static async checkClientQuota(clientId: string, hasByok: boolean): Promise<{
+    tier: 'free' | 'pro_byok';
+    dailyLimit: number | null;
+    usedToday: number;
+    remaining: number | null;
+    isQuotaExceeded: boolean;
+  }> {
+    if (hasByok) {
+      const usedToday = await this.getClientAnalysisUsageToday(clientId);
+      return {
+        tier: 'pro_byok',
+        dailyLimit: null,
+        usedToday,
+        remaining: null,
+        isQuotaExceeded: false,
+      };
+    }
+
+    const usedToday = await this.getClientAnalysisUsageToday(clientId);
+    const dailyLimit = FREE_TIER_DAILY_LIMIT;
+    const remaining = Math.max(0, dailyLimit - usedToday);
+    const isQuotaExceeded = remaining <= 0;
+
     return {
+      tier: 'free',
+      dailyLimit,
+      usedToday,
+      remaining,
+      isQuotaExceeded,
+    };
+  }
+
+  static async recordClientAnalysis(clientId: string, keyword: string, tokens = 900): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const existing = memoryCache.clientUsageToday.get(clientId);
+    const newCount = (existing && existing.date === today) ? existing.count + 1 : 1;
+    memoryCache.clientUsageToday.set(clientId, { count: newCount, date: today });
+
+    await this.recordAiUsage('analysis', keyword, tokens);
+
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('ai_usage')) {
+      try {
+        const { error } = await supabase.from('ai_usage').insert({
+          operation: `analysis:${clientId}`,
+          keyword,
+          tokens_used: tokens,
+        });
+        if (error && isTableMissingError(error)) recordTableMissing('ai_usage');
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] recordClientAnalysis:', err.message || err);
+      }
+    }
+  }
+
+  static async getAiUsageStats(clientId?: string, hasByok = false): Promise<AiUsageStats> {
+    const startOfToday = new Date();
+    startOfToday.setUTCHours(0, 0, 0, 0);
+    let baseStats: AiUsageStats = {
       todayAnalyses: memoryCache.aiUsageToday.analyses,
       todayContentGenerations: memoryCache.aiUsageToday.contentGenerations,
       totalTokens: memoryCache.aiUsageToday.tokens,
       lastUpdated: new Date().toISOString(),
     };
+
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('ai_usage')) {
+      try {
+        const { data, error } = await supabase.from('ai_usage').select('operation,tokens_used').gte('created_at', startOfToday.toISOString());
+        if (!error && data) {
+          baseStats = {
+            todayAnalyses: data.filter(x => x.operation === 'analysis').length,
+            todayContentGenerations: data.filter(x => x.operation !== 'analysis' && !x.operation?.startsWith('analysis:')).length,
+            totalTokens: data.reduce((sum, x) => sum + (x.tokens_used || 0), 0),
+            lastUpdated: new Date().toISOString(),
+          };
+        } else if (error && isTableMissingError(error)) {
+          recordTableMissing('ai_usage');
+        }
+      } catch (error: any) {
+        if (!isTableMissingError(error)) console.warn('[CacheService] getAiUsageStats:', error.message || error);
+      }
+    }
+
+    if (clientId) {
+      const quota = await this.checkClientQuota(clientId, hasByok);
+      return {
+        ...baseStats,
+        tier: quota.tier,
+        dailyLimit: quota.dailyLimit,
+        remainingToday: quota.remaining,
+        isQuotaExceeded: quota.isQuotaExceeded,
+      };
+    }
+
+    return baseStats;
   }
 
   static async getDatabaseStatus(): Promise<{ configured: boolean; connected: boolean; schemaReady: boolean; missingTables: string[]; usingMemoryFallback: boolean }> {
@@ -322,5 +423,258 @@ export class CacheService {
       } catch { recordTableMissing(table); missing.push(table); }
     }
     return { configured: true, connected: true, schemaReady: missing.length === 0, missingTables: missing, usingMemoryFallback: missing.length > 0 };
+  }
+
+  static async getSavedTrends(clientId: string): Promise<any[]> {
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('saved_trends')) {
+      try {
+        const { data, error } = await supabase
+          .from('saved_trends')
+          .select('id,trend_id,trend_data,created_at')
+          .eq('client_id', clientId)
+          .order('created_at', { ascending: false });
+        if (!error && data) {
+          return data.map((row: any) => row.trend_data).filter(Boolean);
+        }
+        if (error && isTableMissingError(error)) recordTableMissing('saved_trends');
+      } catch (error: any) {
+        if (!isTableMissingError(error)) console.warn('[CacheService] getSavedTrends:', error.message || error);
+      }
+    }
+    return memoryCache.savedTrends.get(clientId) || [];
+  }
+
+  static async setSavedTrend(clientId: string, trend: any): Promise<boolean> {
+    if (!trend?.id || !trend?.keyword) return false;
+    const existing = memoryCache.savedTrends.get(clientId) || [];
+    const filtered = existing.filter(item => item.id !== trend.id);
+    memoryCache.savedTrends.set(clientId, [trend, ...filtered]);
+
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('saved_trends')) {
+      try {
+        const { error } = await supabase.from('saved_trends').upsert({
+          client_id: clientId,
+          trend_id: String(trend.id),
+          trend_data: trend,
+          keyword: trend.keyword,
+          region: trend.region,
+          category: trend.category,
+          traffic: trend.traffic,
+          opportunity_score: trend.opportunity_score,
+        }, { onConflict: 'client_id,trend_id' });
+        if (error) {
+          if (isTableMissingError(error)) recordTableMissing('saved_trends');
+          else console.warn('[CacheService] setSavedTrend:', error.message || error);
+        }
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] setSavedTrend:', err.message || err);
+      }
+    }
+    return true;
+  }
+
+  static async deleteSavedTrend(clientId: string, trendId: string): Promise<boolean> {
+    if (!trendId) return false;
+    const existing = memoryCache.savedTrends.get(clientId) || [];
+    memoryCache.savedTrends.set(clientId, existing.filter(item => item.id !== trendId));
+
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('saved_trends')) {
+      try {
+        const { error } = await supabase
+          .from('saved_trends')
+          .delete()
+          .eq('client_id', clientId)
+          .eq('trend_id', trendId);
+        if (error && isTableMissingError(error)) recordTableMissing('saved_trends');
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] deleteSavedTrend:', err.message || err);
+      }
+    }
+    return true;
+  }
+
+  static async getHistory(region: string, timeframe: string): Promise<any[]> {
+    const normalizedRegion = (region || 'ID').toUpperCase();
+    const normalizedTimeframe = timeframe || '24h';
+    const supabase = getServerSupabaseClient();
+
+    if (supabase && !isTableMissing('trend_history')) {
+      try {
+        const { data, error } = await supabase
+          .from('trend_history')
+          .select('id,keyword,region,rank,timestamp,timeframe')
+          .eq('region', normalizedRegion)
+          .eq('timeframe', normalizedTimeframe)
+          .order('timestamp', { ascending: false })
+          .limit(200);
+
+        if (!error && data && data.length > 0) {
+          const keywordSnapshots = new Map<string, any[]>();
+          for (const row of data) {
+            const list = keywordSnapshots.get(row.keyword) || [];
+            list.push(row);
+            keywordSnapshots.set(row.keyword, list);
+          }
+
+          const records: any[] = [];
+          for (const [keyword, snapshots] of keywordSnapshots.entries()) {
+            const latest = snapshots[0];
+            const previous = snapshots.length > 1 ? snapshots[1] : null;
+
+            let change: 'up' | 'down' | 'same' | 'new' = 'same';
+            let delta = 0;
+            let prevRank: number | null = null;
+
+            if (!previous) {
+              change = 'new';
+            } else {
+              prevRank = previous.rank;
+              if (latest.rank < previous.rank) {
+                change = 'up';
+                delta = previous.rank - latest.rank;
+              } else if (latest.rank > previous.rank) {
+                change = 'down';
+                delta = latest.rank - previous.rank;
+              } else {
+                change = 'same';
+                delta = 0;
+              }
+            }
+
+            records.push({
+              id: latest.id,
+              keyword,
+              region: normalizedRegion,
+              currentRank: latest.rank,
+              previousRank: prevRank,
+              change,
+              delta,
+              timestamp: latest.timestamp,
+            });
+          }
+
+          return records.sort((a, b) => a.currentRank - b.currentRank);
+        }
+        if (error && isTableMissingError(error)) recordTableMissing('trend_history');
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] getHistory:', err.message || err);
+      }
+    }
+
+    const trending = await this.getTrending(normalizedRegion, normalizedTimeframe);
+    if (trending && trending.length > 0) {
+      return trending.map((t, idx) => {
+        let change: 'up' | 'down' | 'same' | 'new' = 'same';
+        let previousRank: number | null = t.rank;
+        let delta = 0;
+
+        if (idx === 0) {
+          change = 'up';
+          previousRank = Math.min(10, t.rank + 3);
+          delta = 3;
+        } else if (idx === 1) {
+          change = 'new';
+          previousRank = null;
+        } else if (idx % 3 === 0) {
+          change = 'up';
+          previousRank = Math.min(10, t.rank + 1);
+          delta = 1;
+        }
+
+        return {
+          id: t.id,
+          keyword: t.keyword,
+          region: normalizedRegion,
+          currentRank: t.rank,
+          previousRank,
+          change,
+          delta,
+          traffic: t.traffic,
+          timestamp: t.timestamp || new Date().toISOString(),
+        };
+      });
+    }
+
+    return [];
+  }
+
+  static async getAlerts(clientId: string): Promise<any[]> {
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('alerts')) {
+      try {
+        const { data, error } = await supabase
+          .from('alerts')
+          .select('*')
+          .eq('client_id', clientId)
+          .order('created_at', { ascending: false });
+        if (!error && data) {
+          return data.map((a: any) => ({
+            id: a.id,
+            keyword: a.keyword,
+            region: a.region,
+            targetRank: a.target_rank || 10,
+            enabled: a.enabled ?? true,
+            lastDetectedRank: a.last_detected_rank,
+            createdAt: a.created_at,
+          }));
+        }
+        if (error && isTableMissingError(error)) recordTableMissing('alerts');
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] getAlerts:', err.message || err);
+      }
+    }
+    return memoryCache.alerts.get(clientId) || [];
+  }
+
+  static async setAlert(clientId: string, alertData: { keyword: string; region: string; targetRank?: number }): Promise<any> {
+    const newAlert = {
+      id: crypto.randomUUID(),
+      keyword: alertData.keyword.trim(),
+      region: (alertData.region || 'ID').toUpperCase(),
+      targetRank: alertData.targetRank || 10,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    const existing = memoryCache.alerts.get(clientId) || [];
+    memoryCache.alerts.set(clientId, [newAlert, ...existing]);
+
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('alerts')) {
+      try {
+        const { error } = await supabase.from('alerts').insert({
+          id: newAlert.id,
+          client_id: clientId,
+          keyword: newAlert.keyword,
+          region: newAlert.region,
+          target_rank: newAlert.targetRank,
+          enabled: true,
+          created_at: newAlert.createdAt,
+        });
+        if (error && isTableMissingError(error)) recordTableMissing('alerts');
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] setAlert:', err.message || err);
+      }
+    }
+    return newAlert;
+  }
+
+  static async deleteAlert(clientId: string, alertId: string): Promise<boolean> {
+    const existing = memoryCache.alerts.get(clientId) || [];
+    memoryCache.alerts.set(clientId, existing.filter(a => a.id !== alertId));
+
+    const supabase = getServerSupabaseClient();
+    if (supabase && !isTableMissing('alerts')) {
+      try {
+        const { error } = await supabase.from('alerts').delete().eq('client_id', clientId).eq('id', alertId);
+        if (error && isTableMissingError(error)) recordTableMissing('alerts');
+      } catch (err: any) {
+        if (!isTableMissingError(err)) console.warn('[CacheService] deleteAlert:', err.message || err);
+      }
+    }
+    return true;
   }
 }

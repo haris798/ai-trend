@@ -29,32 +29,32 @@ export default async function handler(req: RequestLike, res: JsonResponse) {
     const query = req.query || {};
 
     if (req.method === 'GET') {
-      const data = await CacheService.getSavedTrends(clientId);
+      const data = await CacheService.getAlerts(clientId);
       return json(res, 200, { success: true, data });
     }
 
     if (req.method === 'POST') {
-      const trend = body?.trend || body;
-      if (!trend?.id || !trend?.keyword) {
-        return json(res, 400, { success: false, error: 'A valid trend is required' });
+      const { keyword, region, targetRank } = body || {};
+      if (!keyword) {
+        return json(res, 400, { success: false, error: 'Keyword is required' });
       }
-      await CacheService.setSavedTrend(clientId, trend);
-      return json(res, 200, { success: true });
+      const alert = await CacheService.setAlert(clientId, { keyword, region, targetRank });
+      return json(res, 200, { success: true, data: alert });
     }
 
     if (req.method === 'DELETE') {
-      const trendId = String(query.id || body?.id || '').trim();
-      if (!trendId) {
-        return json(res, 400, { success: false, error: 'Trend ID is required' });
+      const alertId = String(query.id || body?.id || '').trim();
+      if (!alertId) {
+        return json(res, 400, { success: false, error: 'Alert ID is required' });
       }
-      await CacheService.deleteSavedTrend(clientId, trendId);
+      await CacheService.deleteAlert(clientId, alertId);
       return json(res, 200, { success: true });
     }
 
     res.setHeader('Allow', 'GET, POST, DELETE');
     return json(res, 405, { success: false, error: 'Method not allowed' });
   } catch (error: any) {
-    console.error('[saved-trends]', error?.message || error);
-    return json(res, 500, { success: false, error: 'Saved trends operation failed' });
+    console.error('[alerts]', error?.message || error);
+    return json(res, 500, { success: false, error: 'Alerts operation failed' });
   }
 }

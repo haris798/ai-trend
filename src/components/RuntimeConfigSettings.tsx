@@ -101,9 +101,16 @@ export const RuntimeConfigSettings: React.FC = () => {
             {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
           </button>
         </div>
-        <p className="text-[11px] text-amber-300/80 leading-relaxed">
-          Browser-local only. This value is stored in this browser and is <strong>not</strong> copied to Vercel or used as the server-side Gemini secret. For production server-side AI, configure <code className="text-slate-200">GEMINI_API_KEY</code> in Vercel.
-        </p>
+        {Boolean(config.geminiApiKey && config.geminiApiKey.length > 10) ? (
+          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span><strong>Pro Tier (BYOK) Aktif:</strong> Kuota analisis harian Anda adalah <strong>Unlimited</strong> tanpa batasan.</span>
+          </div>
+        ) : (
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Free tier dibatasi 5 analisis AI per hari. Masukkan <strong>Gemini API Key pribadi</strong> Anda (dari <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-indigo-400 underline">Google AI Studio</a>) untuk menikmati akses <strong>Pro Tier (Unlimited)</strong> tanpa batas.
+          </p>
+        )}
       </div>
 
       <div className="flex items-start gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/15">

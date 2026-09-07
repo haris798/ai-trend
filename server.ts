@@ -141,9 +141,12 @@ async function startServer() {
     }
   });
 
-  // 4. Gemini Trend Analysis (/api/analyze with 24-hour Supabase caching)
+  // 4. Gemini Trend Analysis (/api/analyze with 24-hour Supabase caching & Quota)
   app.post('/api/analyze', async (req, res) => {
     const { keyword, region, category, trendData, forceRefresh } = req.body;
+    const clientId = String(req.headers['x-client-id'] || req.body?.clientId || 'default-client').trim();
+    const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
+    const hasByok = Boolean(customApiKey && customApiKey.length > 10);
 
     if (!keyword) {
       return res.status(400).json({ error: 'Keyword is required for analysis.' });
@@ -175,28 +178,44 @@ async function startServer() {
         }
       }
 
-      // 2. Cache miss or forced refresh: Execute Gemini Analysis
+      // 2. Check Quota before executing live AI generation
+      const quota = await CacheService.checkClientQuota(clientId, hasByok);
+      if (quota.isQuotaExceeded) {
+        return res.status(429).json({
+          success: false,
+          error: 'Batas kuota harian Free Tier tercapai (5/5 analisis hari ini). Masukkan Gemini API Key pribadi Anda di menu Settings (BYOK) untuk akses tanpa batas, atau tunggu reset kuota besok.',
+          quotaExceeded: true,
+          tier: 'free',
+          dailyLimit: quota.dailyLimit,
+          usedToday: quota.usedToday,
+          remaining: quota.remaining,
+        });
+      }
+
+      // 3. Cache miss or forced refresh: Execute Gemini Analysis
       const analysis = await GeminiTrendService.analyzeTrend(
         keyword,
         reg,
         category || 'General',
-        trendData || {}
+        trendData || {},
+        customApiKey
       );
 
-      // 3. Save to Supabase 24h Cache & Track Usage
+      // 4. Save to Supabase 24h Cache & Track Usage
       await CacheService.setAnalysis(analysis);
-      await CacheService.recordAiUsage('analysis', keyword, 900);
+      await CacheService.recordClientAnalysis(clientId, keyword, 900);
 
       res.setHeader('X-Cache', 'MISS');
-      res.setHeader('X-Cache-Source', 'gemini_api');
+      res.setHeader('X-Cache-Source', hasByok ? 'gemini_byok' : 'gemini_3.8_flash');
 
       return res.json({
         success: true,
         cached: false,
-        source: 'gemini_3.8_flash',
+        source: hasByok ? 'gemini_byok' : 'gemini_3.8_flash',
         ttlRemainingMs: 24 * 60 * 60 * 1000,
         cachedAt: analysis.created_at || new Date().toISOString(),
         data: analysis,
+        tier: quota.tier,
       });
     } catch (error: any) {
       console.error('Gemini analyze error:', error.message);
@@ -210,12 +229,13 @@ async function startServer() {
   // 5. Keyword Expansion (/api/expand-keywords)
   app.post('/api/expand-keywords', async (req, res) => {
     const { keyword, region } = req.body;
+    const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
     if (!keyword) {
       return res.status(400).json({ error: 'Keyword is required.' });
     }
 
     try {
-      const keywords = await GeminiTrendService.expandKeywords(keyword, region || 'ID');
+      const keywords = await GeminiTrendService.expandKeywords(keyword, region || 'ID', customApiKey);
       await CacheService.recordAiUsage('keywords', keyword, 750);
       return res.json({ success: true, data: keywords });
     } catch (error: any) {
@@ -227,12 +247,13 @@ async function startServer() {
   // 6. Content Ideas Generator (/api/generate-content)
   app.post('/api/generate-content', async (req, res) => {
     const { keyword, region, analysis } = req.body;
+    const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
     if (!keyword) {
       return res.status(400).json({ error: 'Keyword is required.' });
     }
 
     try {
-      const ideas = await GeminiTrendService.generateContentIdeas(keyword, region || 'ID', analysis);
+      const ideas = await GeminiTrendService.generateContentIdeas(keyword, region || 'ID', analysis, customApiKey);
       await CacheService.recordAiUsage('content_generation', keyword, 1200);
       return res.json({ success: true, data: ideas });
     } catch (error: any) {
@@ -244,12 +265,13 @@ async function startServer() {
   // 7. KDP Analysis (/api/generate-kdp)
   app.post('/api/generate-kdp', async (req, res) => {
     const { keyword, region } = req.body;
+    const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
     if (!keyword) {
       return res.status(400).json({ error: 'Keyword is required.' });
     }
 
     try {
-      const kdp = await GeminiTrendService.analyzeKdp(keyword, region || 'ID');
+      const kdp = await GeminiTrendService.analyzeKdp(keyword, region || 'ID', customApiKey);
       await CacheService.recordAiUsage('kdp', keyword, 1000);
       return res.json({ success: true, data: kdp });
     } catch (error: any) {
@@ -261,12 +283,13 @@ async function startServer() {
   // 8. Monetization Channel Analysis (/api/monetization)
   app.post('/api/monetization', async (req, res) => {
     const { keyword, region, category } = req.body;
+    const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
     if (!keyword) {
       return res.status(400).json({ error: 'Keyword is required.' });
     }
 
     try {
-      const monetization = await GeminiTrendService.analyzeMonetization(keyword, region || 'ID', category || 'General');
+      const monetization = await GeminiTrendService.analyzeMonetization(keyword, region || 'ID', category || 'General', customApiKey);
       await CacheService.recordAiUsage('analysis', keyword, 650);
       return res.json({ success: true, data: monetization });
     } catch (error: any) {
@@ -277,9 +300,102 @@ async function startServer() {
 
   // 9. AI Usage Stats (/api/ai-usage)
   app.get('/api/ai-usage', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.query.clientId || 'default-client').trim();
+    const customApiKey = String(req.headers['x-gemini-api-key'] || '').trim();
+    const hasByok = Boolean(customApiKey && customApiKey.length > 10);
     try {
-      const stats = await CacheService.getAiUsageStats();
+      const stats = await CacheService.getAiUsageStats(clientId, hasByok);
       return res.json({ success: true, data: stats });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // 10. Saved Trends (/api/saved-trends)
+  app.get('/api/saved-trends', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.query.clientId || 'default-client').trim();
+    try {
+      const data = await CacheService.getSavedTrends(clientId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post('/api/saved-trends', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.body?.clientId || 'default-client').trim();
+    const trend = req.body?.trend || req.body;
+    if (!trend?.id || !trend?.keyword) {
+      return res.status(400).json({ success: false, error: 'A valid trend is required.' });
+    }
+    try {
+      await CacheService.setSavedTrend(clientId, trend);
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.delete('/api/saved-trends', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.query.clientId || 'default-client').trim();
+    const trendId = String(req.query.id || req.body?.id || '').trim();
+    if (!trendId) {
+      return res.status(400).json({ success: false, error: 'Trend ID is required.' });
+    }
+    try {
+      await CacheService.deleteSavedTrend(clientId, trendId);
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // 11. Trend History (/api/history)
+  app.get('/api/history', async (req, res) => {
+    const region = ((req.query.region as string) || 'ID').toUpperCase();
+    const timeframe = (req.query.timeframe as string) || '24h';
+    try {
+      const data = await CacheService.getHistory(region, timeframe);
+      return res.json({ success: true, region, timeframe, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // 12. Alerts (/api/alerts)
+  app.get('/api/alerts', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.query.clientId || 'default-client').trim();
+    try {
+      const data = await CacheService.getAlerts(clientId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post('/api/alerts', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.body?.clientId || 'default-client').trim();
+    const { keyword, region, targetRank } = req.body || {};
+    if (!keyword) {
+      return res.status(400).json({ success: false, error: 'Keyword is required.' });
+    }
+    try {
+      const alert = await CacheService.setAlert(clientId, { keyword, region, targetRank });
+      return res.json({ success: true, data: alert });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.delete('/api/alerts', async (req, res) => {
+    const clientId = String(req.headers['x-client-id'] || req.query.clientId || 'default-client').trim();
+    const alertId = String(req.query.id || req.body?.id || '').trim();
+    if (!alertId) {
+      return res.status(400).json({ success: false, error: 'Alert ID is required.' });
+    }
+    try {
+      await CacheService.deleteAlert(clientId, alertId);
+      return res.json({ success: true });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
