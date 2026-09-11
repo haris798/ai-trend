@@ -1,16 +1,17 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Sidebar, PageView } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
-import { DashboardView } from './pages/DashboardView';
-import { TrendingView } from './pages/TrendingView';
-import { SavedView } from './pages/SavedView';
-import { HistoryView } from './pages/HistoryView';
-import { CompareView } from './pages/CompareView';
-import { AlertsView } from './pages/AlertsView';
-import { SettingsView } from './pages/SettingsView';
-import { RuntimeConfigSettings } from './components/RuntimeConfigSettings';
 import { TrendDetailModal } from './components/TrendDetailModal';
 import { ExportModal } from './components/ExportModal';
+
+const DashboardView = lazy(() => import('./pages/DashboardView').then(m => ({ default: m.DashboardView })));
+const TrendingView = lazy(() => import('./pages/TrendingView').then(m => ({ default: m.TrendingView })));
+const SavedView = lazy(() => import('./pages/SavedView').then(m => ({ default: m.SavedView })));
+const HistoryView = lazy(() => import('./pages/HistoryView').then(m => ({ default: m.HistoryView })));
+const CompareView = lazy(() => import('./pages/CompareView').then(m => ({ default: m.CompareView })));
+const AlertsView = lazy(() => import('./pages/AlertsView').then(m => ({ default: m.AlertsView })));
+const SettingsView = lazy(() => import('./pages/SettingsView').then(m => ({ default: m.SettingsView })));
+const RuntimeConfigSettings = lazy(() => import('./components/RuntimeConfigSettings').then(m => ({ default: m.RuntimeConfigSettings })));
 import { TrendingSearch, AiUsageStats } from './types';
 import { getClientId, getApiHeaders } from './utils/clientId';
 import { CheckCircle2 } from 'lucide-react';
@@ -187,13 +188,15 @@ export default function App() {
       <div className="lg:pl-64 flex flex-col min-h-screen">
         <Navbar onOpenMobile={() => setMobileSidebarOpen(true)} selectedRegion={selectedRegion} onSelectRegion={setSelectedRegion} selectedTimeframe={selectedTimeframe} onSelectTimeframe={setSelectedTimeframe} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} onRefresh={() => fetchTrends(true)} loading={loadingTrends} aiUsage={aiUsage} trends={trends} onShowToast={showToast} onOpenExport={() => handleOpenExport(trends)} onOpenSettings={() => setCurrentView('settings')} />
         <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto">
-          {currentView === 'dashboard' && <DashboardView trends={trends} loading={loadingTrends} error={trendError} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onRefresh={() => fetchTrends(true)} onSelectCategory={setSelectedCategory} />}
-          {currentView === 'trending' && <TrendingView trends={trends} loading={loadingTrends} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onShowToast={showToast} onOpenExport={handleOpenExport} />}
-          {currentView === 'saved' && <SavedView savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onRemoveSaved={handleRemoveSaved} onShowToast={showToast} onOpenExport={handleOpenExport} />}
-          {currentView === 'history' && <HistoryView currentTrends={trends} selectedRegion={selectedRegion} onSelectTrend={setSelectedTrend} />}
-          {currentView === 'compare' && <CompareView trends={trends} onSelectTrend={setSelectedTrend} />}
-          {currentView === 'alerts' && <AlertsView currentTrends={trends} onSelectTrend={setSelectedTrend} onShowToast={showToast} />}
-          {currentView === 'settings' && <div className="space-y-6"><RuntimeConfigSettings /><SettingsView /></div>}
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-slate-400">Loading...</div>}>
+            {currentView === 'dashboard' && <DashboardView trends={trends} loading={loadingTrends} error={trendError} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onRefresh={() => fetchTrends(true)} onSelectCategory={setSelectedCategory} />}
+            {currentView === 'trending' && <TrendingView trends={trends} loading={loadingTrends} selectedRegion={selectedRegion} selectedCategory={selectedCategory} savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onToggleSave={handleToggleSave} onShowToast={showToast} onOpenExport={handleOpenExport} />}
+            {currentView === 'saved' && <SavedView savedTrends={savedTrends} onSelectTrend={setSelectedTrend} onRemoveSaved={handleRemoveSaved} onShowToast={showToast} onOpenExport={handleOpenExport} />}
+            {currentView === 'history' && <HistoryView currentTrends={trends} selectedRegion={selectedRegion} onSelectTrend={setSelectedTrend} />}
+            {currentView === 'compare' && <CompareView trends={trends} onSelectTrend={setSelectedTrend} />}
+            {currentView === 'alerts' && <AlertsView currentTrends={trends} onSelectTrend={setSelectedTrend} onShowToast={showToast} />}
+            {currentView === 'settings' && <div className="space-y-6"><RuntimeConfigSettings /><SettingsView /></div>}
+          </Suspense>
         </main>
       </div>
       {selectedTrend && <TrendDetailModal trend={selectedTrend} onClose={() => setSelectedTrend(null)} onSaveToggle={handleToggleSave} isSaved={savedTrends.some((s) => s.id === selectedTrend.id)} onRefreshUsage={fetchAiUsage} onOpenSettings={() => { setSelectedTrend(null); setCurrentView('settings'); }} />}
